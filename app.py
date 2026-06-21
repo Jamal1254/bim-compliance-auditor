@@ -35,7 +35,6 @@ with col2:
         if not ifc_file or not pdf_file or not raw_gemini_key:
             st.error("⚠️ Please provide all files and the API Key.")
         else:
-            # Clean the API key immediately to eliminate trailing spaces
             gemini_key = raw_gemini_key.strip()
             
             # === STEP 1: TARGETED SEMANTIC TEXT RETRIEVAL ===
@@ -77,9 +76,8 @@ with col2:
                     try:
                         from ifc_to_neo4j import IFCGraphMapper
                         mapper = IFCGraphMapper()
-                        mapper.clear_database()  # Wipe previous runtime layers
+                        mapper.clear_database()
                         
-                        # Save file dynamically to let ifcopenshell parse out nodes
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".ifc") as graph_tmp:
                             graph_tmp.write(ifc_file.getvalue())
                             graph_tmp_path = graph_tmp.name
@@ -98,7 +96,6 @@ with col2:
                     from ifc_to_neo4j import IFCGraphMapper
                     mapper = IFCGraphMapper()
                     
-                    # Target query to map localized structural environment 
                     cypher_query = """
                     MATCH (e:BIMElement {globalId: $gid})
                     OPTIONAL MATCH (e)-[:CONTAINED_IN]->(s:BuildingStorey)
@@ -129,7 +126,6 @@ with col2:
                         from google import genai
                         client = genai.Client(api_key=gemini_key)
                         
-                        # Multi-Layer Context Framework (Proposal Aligned)
                         prompt = (
                             f"You are an expert Structural and BIM Compliance Engineer executing a rigorous architectural quality assurance audit.\n\n"
                             f"Cross-examine the following multi-layered project datasets for dimensional or regulatory mismatches:\n\n"
@@ -149,14 +145,14 @@ with col2:
                             f"2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS: Deep dive into the physical thickness metric and the graph relational context layer. Analyze if the structural connections in the network meet requirements or display major architectural data gaps.\n"
                             f"3. 📄 SPECIFICATION CLASH: Evaluate structural material alignment (e.g., using an IfcCurtainWall system where only masonry cavity or rendered blockwork assemblies are detailed).\n"
                             f"4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Conclude with a strict, bulleted instructions list telling the Revit Modeler/BIM Coordinator exactly what properties to edit or insert to clear this flag.\n"
-                            f"5. FORMAL ENGINEERING VERDICT: Formally declare an absolute engineering verdict at the very end. You must enclose the final verdict inside a standard markdown blockquote (e.g., '> ### 🔴 VERDICT: UNVERIFIED DUE TO DATA GAP') so that it renders as a cleanly highlighted visual card in Streamlit."
+                            f"5. FORMAL ENGINEERING VERDICT: Formally declare an absolute engineering verdict at the very end. You must enclose the final verdict inside a markdown blockquote (e.g., '> ### 🔴 VERDICT: UNVERIFIED DUE TO DATA GAP') so that it renders as a cleanly highlighted visual card in Streamlit."
                         )
                         
-                        # Failsafe Routing Logic with verified model names
+                        # Structured Fallback Model Engine Routing
                         try: 
                             response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
                         except Exception: 
-                            response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+                            response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
                         
                         st.markdown("### 🤖 Hybrid Graph-RAG Compliance Report")
                         st.info(response.text)
