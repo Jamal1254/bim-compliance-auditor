@@ -1,0 +1,4 @@
+ifcopenshell
+streamlit
+google-genai
+pypdf
