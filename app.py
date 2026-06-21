@@ -88,25 +88,25 @@ with col2:
                         client = genai.Client(api_key=gemini_key)
                         
                         # Advanced Industrial Prompt Engineering Structure
-                    prompt = (
-                        f"You are an expert Structural and BIM Compliance Engineer executing a rigorous architectural quality assurance audit.\n\n"
-                        f"Cross-examine the following project dataset layers for dimensional or regulatory mismatches:\n\n"
-                        f"LAYER 1: EXACT STRUCTURED BIM METRICS (IFC Parse):\n"
-                        f"- Object Architectural Type: {ifc_data['Type']}\n"
-                        f"- Object Reference Name: {ifc_data['Name']}\n"
-                        f"- Instance Global ID: {ifc_data['GlobalId']}\n"
-                        f"- Model Described Thickness: {ifc_data['Width']}mm\n"
-                        f"- Isolated Cavity Space: {ifc_data['CavityWidth'] if ifc_data['CavityWidth'] else 'not explicitly defined'}mm\n"
-                        f"- External Envelope Exposure: {ifc_data['IsExternal']}\n\n"
-                        f"LAYER 2: TARGETED SEMANTIC CLAUSES (Extracted Specification PDF Blocks):\n"
-                        f"{targeted_spec_context}\n\n"
-                        f"Instructions for Report Generation:\n"
-                        f"1. 📊 EXECUTIVE COMPLIANCE MATRIX: Begin with a clean markdown summary table matching Parameter, IFC Value, Spec Target, and Status (COMPLIANT, CRITICAL ERROR, or DATA GAP). CRITICAL: Keep the descriptions in the 'Spec Target' column highly concise (maximum 1-2 short sentences) to ensure proper text-wrapping and scannability on a standard dashboard screen.\n"
-                        f"2. 🔍 GEOMETRIC ANALYSIS: Deep dive into the physical thickness metric. If it reads 'Unknown', explicitly connect this data gap to an inability to assess thermal bridging, U-values, or compliance under UK Building Regulations Part L.\n"
-                        f"3. 📄 SPECIFICATION CLASH: Evaluate structural material alignment (e.g., using an IfcCurtainWall system where only masonry cavity or rendered blockwork assemblies are detailed).\n"
-                        f"4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Conclude with a strict, bulleted instructions list telling the Revit Modeler/BIM Coordinator exactly what properties to edit or insert to clear this flag.\n"
-                        f"5. FORMAL ENGINEERING VERDICT: Formally declare an absolute engineering verdict at the very end. You must enclose the final verdict inside a standard markdown blockquote (e.g., '> ### 🔴 VERDICT: UNVERIFIED DUE TO DATA GAP') so that it renders as a cleanly highlighted visual card in Streamlit."
-                    )
+                        prompt = (
+                            f"You are an expert Structural and BIM Compliance Engineer executing a rigorous architectural quality assurance audit.\n\n"
+                            f"Cross-examine the following project dataset layers for dimensional or regulatory mismatches:\n\n"
+                            f"LAYER 1: EXACT STRUCTURED BIM METRICS (IFC Parse):\n"
+                            f"- Object Architectural Type: {ifc_data['Type']}\n"
+                            f"- Object Reference Name: {ifc_data['Name']}\n"
+                            f"- Instance Global ID: {ifc_data['GlobalId']}\n"
+                            f"- Model Described Thickness: {ifc_data['Width']}mm\n"
+                            f"- Isolated Cavity Space: {ifc_data['CavityWidth'] if ifc_data['CavityWidth'] else 'not explicitly defined'}mm\n"
+                            f"- External Envelope Exposure: {ifc_data['IsExternal']}\n\n"
+                            f"LAYER 2: TARGETED SEMANTIC CLAUSES (Extracted Specification PDF Blocks):\n"
+                            f"{targeted_spec_context}\n\n"
+                            f"Instructions for Report Generation:\n"
+                            f"1. 📊 EXECUTIVE COMPLIANCE MATRIX: Begin with a clean markdown summary table matching Parameter, IFC Value, Spec Target, and Status (COMPLIANT, CRITICAL ERROR, or DATA GAP). CRITICAL: Keep the descriptions in the 'Spec Target' column highly concise (maximum 1-2 short sentences) to ensure proper text-wrapping and scannability on a standard dashboard screen.\n"
+                            f"2. 🔍 GEOMETRIC ANALYSIS: Deep dive into the physical thickness metric. If it reads 'Unknown', explicitly connect this data gap to an inability to assess thermal bridging, U-values, or compliance under UK Building Regulations Part L.\n"
+                            f"3. 📄 SPECIFICATION CLASH: Evaluate structural material alignment (e.g., using an IfcCurtainWall system where only masonry cavity or rendered blockwork assemblies are detailed).\n"
+                            f"4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Conclude with a strict, bulleted instructions list telling the Revit Modeler/BIM Coordinator exactly what properties to edit or insert to clear this flag.\n"
+                            f"5. FORMAL ENGINEERING VERDICT: Formally declare an absolute engineering verdict at the very end. You must enclose the final verdict inside a standard markdown blockquote (e.g., '> ### 🔴 VERDICT: UNVERIFIED DUE TO DATA GAP') so that it renders as a cleanly highlighted visual card in Streamlit."
+                        )
                         
                         # Failsafe Routing Logic with verified model names
                         try: 
