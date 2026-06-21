@@ -2,3 +2,4 @@ ifcopenshell
 streamlit
 google-genai
 pypdf
+neo4j>=5.0.0
