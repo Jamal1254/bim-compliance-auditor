@@ -16,7 +16,7 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.header("⚙️ Audit Parameters")
-    gemini_key = st.text_input("🔑 Paste Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
+    raw_gemini_key = st.text_input("🔑 Paste Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
     
     st.subheader("📁 1. Upload 3D BIM Model")
     ifc_file = st.file_uploader("Upload .ifc file", type=["ifc"])
@@ -32,9 +32,12 @@ with col2:
     st.header("📊 Live Compliance Audit Report")
     
     if run_audit:
-        if not ifc_file or not pdf_file or not gemini_key:
+        if not ifc_file or not pdf_file or not raw_gemini_key:
             st.error("⚠️ Please provide all files and the API Key.")
         else:
+            # Clean the API key immediately to completely eliminate space-pasting ClientErrors
+            gemini_key = raw_gemini_key.strip()
+            
             # === STEP 1: TARGETED SEMANTIC TEXT RETRIEVAL ===
             relevant_chunks = []
             with st.spinner("📄 Extracting technical contract clauses..."):
@@ -80,37 +83,41 @@ with col2:
                     st.text(targeted_spec_context)
                 
                 with st.spinner("🧠 Frontier model evaluating compiled context layers..."):
-                    from google import genai
-                    client = genai.Client(api_key=gemini_key)
-                    
-                    # Advanced Industrial Prompt Engineering Structure
-                    prompt = (
-                        f"You are an expert Structural and BIM Compliance Engineer executing a rigorous architectural quality assurance audit.\n\n"
-                        f"Cross-examine the following project dataset layers for dimensional or regulatory mismatches:\n\n"
-                        f"LAYER 1: EXACT STRUCTURED BIM METRICS (IFC Parse):\n"
-                        f"- Object Architectural Type: {ifc_data['Type']}\n"
-                        f"- Object Reference Name: {ifc_data['Name']}\n"
-                        f"- Instance Global ID: {ifc_data['GlobalId']}\n"
-                        f"- Model Described Thickness: {ifc_data['Width']}mm\n"
-                        f"- Isolated Cavity Space: {ifc_data['CavityWidth'] if ifc_data['CavityWidth'] else 'not explicitly defined'}mm\n"
-                        f"- External Envelope Exposure: {ifc_data['IsExternal']}\n\n"
-                        f"LAYER 2: TARGETED SEMANTIC CLAUSES (Extracted Specification PDF Blocks):\n"
-                        f"{targeted_spec_context}\n\n"
-                        f"Instructions for Report Generation:\n"
-                        f"1. 📊 EXECUTIVE COMPLIANCE MATRIX: Begin with a clean markdown summary table matching Parameter, IFC Value, Spec Target, and Status (COMPLIANT, CRITICAL ERROR, or DATA GAP).\n"
-                        f"2. 🔍 GEOMETRIC ANALYSIS: Deep dive into the physical thickness metric. If it reads 'Unknown', explicitly connect this data gap to an inability to assess thermal bridging, U-values, or compliance under UK Building Regulations Part L.\n"
-                        f"3. 📄 SPECIFICATION CLASH: Evaluate structural material alignment (e.g., using an IfcCurtainWall system where only masonry cavity or rendered blockwork assemblies are detailed).\n"
-                        f"4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Conclude with a strict, bulleted instructions list telling the Revit Modeler/BIM Coordinator exactly what properties to edit or insert to clear this flag.\n"
-                        f"5. Formally declare an absolute engineering verdict at the very end: COMPLIANT, NON-COMPLIANT, or UNVERIFIED DUE TO DATA GAP."
-                    )
-                    
-                    # Failsafe Routing Logic
-                    try: 
-                        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-                    except Exception: 
-                        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-                    
-                    st.markdown("### 🤖 Hybrid Discrepancy Audit Report")
-                    st.info(response.text)
+                    try:
+                        from google import genai
+                        client = genai.Client(api_key=gemini_key)
+                        
+                        # Advanced Industrial Prompt Engineering Structure
+                        prompt = (
+                            f"You are an expert Structural and BIM Compliance Engineer executing a rigorous architectural quality assurance audit.\n\n"
+                            f"Cross-examine the following project dataset layers for dimensional or regulatory mismatches:\n\n"
+                            f"LAYER 1: EXACT STRUCTURED BIM METRICS (IFC Parse):\n"
+                            f"- Object Architectural Type: {ifc_data['Type']}\n"
+                            f"- Object Reference Name: {ifc_data['Name']}\n"
+                            f"- Instance Global ID: {ifc_data['GlobalId']}\n"
+                            f"- Model Described Thickness: {ifc_data['Width']}mm\n"
+                            f"- Isolated Cavity Space: {ifc_data['CavityWidth'] if ifc_data['CavityWidth'] else 'not explicitly defined'}mm\n"
+                            f"- External Envelope Exposure: {ifc_data['IsExternal']}\n\n"
+                            f"LAYER 2: TARGETED SEMANTIC CLAUSES (Extracted Specification PDF Blocks):\n"
+                            f"{targeted_spec_context}\n\n"
+                            f"Instructions for Report Generation:\n"
+                            f"1. 📊 EXECUTIVE COMPLIANCE MATRIX: Begin with a clean markdown summary table matching Parameter, IFC Value, Spec Target, and Status (COMPLIANT, CRITICAL ERROR, or DATA GAP).\n"
+                            f"2. 🔍 GEOMETRIC ANALYSIS: Deep dive into the physical thickness metric. If it reads 'Unknown', explicitly connect this data gap to an inability to assess thermal bridging, U-values, or compliance under UK Building Regulations Part L.\n"
+                            f"3. 📄 SPECIFICATION CLASH: Evaluate structural material alignment (e.g., using an IfcCurtainWall system where only masonry cavity or rendered blockwork assemblies are detailed).\n"
+                            f"4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Conclude with a strict, bulleted instructions list telling the Revit Modeler/BIM Coordinator exactly what properties to edit or insert to clear this flag.\n"
+                            f"5. Formally declare an absolute engineering verdict at the very end: COMPLIANT, NON-COMPLIANT, or UNVERIFIED DUE TO DATA GAP."
+                        )
+                        
+                        # Failsafe Routing Logic with verified model names
+                        try: 
+                            response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+                        except Exception: 
+                            response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+                        
+                        st.markdown("### 🤖 Hybrid Discrepancy Audit Report")
+                        st.info(response.text)
+                        
+                    except Exception as e:
+                        st.error(f"❌ Hybrid AI Analysis Failed. Please check if your Gemini API key is valid and active. Error details: {e}")
             else:
                 st.error(f"Could not find any 3D component matching the term '{search_keyword}' inside your uploaded IFC model file.")
