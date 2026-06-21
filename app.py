@@ -7,7 +7,7 @@ from check_ifc_compliance import extract_ifc_wall_dimensions
 st.set_page_config(page_title="BIM Hybrid Auditor", page_icon="🏗️", layout="wide")
 st.title("🏗️ Automated BIM Model-vs-Specification Compliance Engine")
 st.markdown("""
-This deployment executes automated verification of **3D BIM schemas** against targeted semantic contexts extracted from **Technical Project Specifications**.
+This deployment executes automated verification of **3D BIM schemas** against targeted semantic contexts extracted from **Technical Project Specifications** utilizing a dual **Graph-RAG** network pathway.
 """)
 
 st.divider()
@@ -35,7 +35,7 @@ with col2:
         if not ifc_file or not pdf_file or not raw_gemini_key:
             st.error("⚠️ Please provide all files and the API Key.")
         else:
-            # Clean the API key immediately to completely eliminate space-pasting ClientErrors
+            # Clean the API key immediately to eliminate trailing spaces
             gemini_key = raw_gemini_key.strip()
             
             # === STEP 1: TARGETED SEMANTIC TEXT RETRIEVAL ===
@@ -72,6 +72,48 @@ with col2:
             if ifc_data:
                 st.success(f"✅ Exact BIM Mapping Complete: {ifc_data['Type']}")
                 
+                # --- GRAPH-RAG BACKEND SYNCHRONIZATION ---
+                with st.spinner("⛓️ Mapping IFC Structural Relationships into Neo4j Knowledge Graph..."):
+                    try:
+                        from ifc_to_neo4j import IFCGraphMapper
+                        mapper = IFCGraphMapper()
+                        mapper.clear_database()  # Wipe previous runtime layers
+                        
+                        # Save file dynamically to let ifcopenshell parse out nodes
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ifc") as graph_tmp:
+                            graph_tmp.write(ifc_file.getvalue())
+                            graph_tmp_path = graph_tmp.name
+                        
+                        mapper.upload_ifc_to_graph(graph_tmp_path)
+                        try: os.unlink(graph_tmp_path)
+                        except Exception: pass
+                        
+                        st.sidebar.success("📊 Neo4j Graph Synchronized Successfully!")
+                    except Exception as g_err:
+                        st.sidebar.warning(f"⚠️ Neo4j Sync Bypassed: {g_err}")
+
+                # --- GRAPH CONTEXT RETRIEVAL (CYPHER LAYER) ---
+                graph_context_str = "No connected structural topology could be fetched from the database."
+                try:
+                    from ifc_to_neo4j import IFCGraphMapper
+                    mapper = IFCGraphMapper()
+                    
+                    # Target query to map localized structural environment 
+                    cypher_query = """
+                    MATCH (e:BIMElement {globalId: $gid})
+                    OPTIONAL MATCH (e)-[:CONTAINED_IN]->(s:BuildingStorey)
+                    OPTIONAL MATCH (e)-[:HAS_MATERIAL]->(m:Material)
+                    RETURN s.name AS Level, collect(m.name) AS Materials
+                    """
+                    with mapper.driver.session(database=mapper.database) as session:
+                        result = session.run(cypher_query, gid=ifc_data['GlobalId']).single()
+                        if result:
+                            level_name = result["Level"] if result["Level"] else "Unknown Level Structure"
+                            mats = ", ".join(result["Materials"]) if result["Materials"] else "No associated materials populated"
+                            graph_context_str = f"- Mapped Spatial Zone / Storey Level: {level_name}\n- Mapped Material Graph Links: {mats}"
+                except Exception as graph_read_err:
+                    graph_context_str = f"Graph data extraction omitted: {graph_read_err}"
+
                 # Render Metric Cards
                 m_col1, m_col2, m_col3 = st.columns(3)
                 m_col1.metric("Thickness / Width", f"{ifc_data['Width']} mm" if ifc_data['Width'] != 'Unknown' else "Unknown")
@@ -87,10 +129,10 @@ with col2:
                         from google import genai
                         client = genai.Client(api_key=gemini_key)
                         
-                        # Advanced Industrial Prompt Engineering Structure
+                        # Multi-Layer Context Framework (Proposal Aligned)
                         prompt = (
                             f"You are an expert Structural and BIM Compliance Engineer executing a rigorous architectural quality assurance audit.\n\n"
-                            f"Cross-examine the following project dataset layers for dimensional or regulatory mismatches:\n\n"
+                            f"Cross-examine the following multi-layered project datasets for dimensional or regulatory mismatches:\n\n"
                             f"LAYER 1: EXACT STRUCTURED BIM METRICS (IFC Parse):\n"
                             f"- Object Architectural Type: {ifc_data['Type']}\n"
                             f"- Object Reference Name: {ifc_data['Name']}\n"
@@ -98,11 +140,13 @@ with col2:
                             f"- Model Described Thickness: {ifc_data['Width']}mm\n"
                             f"- Isolated Cavity Space: {ifc_data['CavityWidth'] if ifc_data['CavityWidth'] else 'not explicitly defined'}mm\n"
                             f"- External Envelope Exposure: {ifc_data['IsExternal']}\n\n"
-                            f"LAYER 2: TARGETED SEMANTIC CLAUSES (Extracted Specification PDF Blocks):\n"
+                            f"LAYER 2: KNOWLEDGE GRAPH RELATIONAL TOPOLOGY (Neo4j Context Retrieval):\n"
+                            f"{graph_context_str}\n\n"
+                            f"LAYER 3: TARGETED SEMANTIC CLAUSES (Extracted Specification PDF Blocks):\n"
                             f"{targeted_spec_context}\n\n"
                             f"Instructions for Report Generation:\n"
                             f"1. 📊 EXECUTIVE COMPLIANCE MATRIX: Begin with a clean markdown summary table matching Parameter, IFC Value, Spec Target, and Status (COMPLIANT, CRITICAL ERROR, or DATA GAP). CRITICAL: Keep the descriptions in the 'Spec Target' column highly concise (maximum 1-2 short sentences) to ensure proper text-wrapping and scannability on a standard dashboard screen.\n"
-                            f"2. 🔍 GEOMETRIC ANALYSIS: Deep dive into the physical thickness metric. If it reads 'Unknown', explicitly connect this data gap to an inability to assess thermal bridging, U-values, or compliance under UK Building Regulations Part L.\n"
+                            f"2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS: Deep dive into the physical thickness metric and the graph relational context layer. Analyze if the structural connections in the network meet requirements or display major architectural data gaps.\n"
                             f"3. 📄 SPECIFICATION CLASH: Evaluate structural material alignment (e.g., using an IfcCurtainWall system where only masonry cavity or rendered blockwork assemblies are detailed).\n"
                             f"4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Conclude with a strict, bulleted instructions list telling the Revit Modeler/BIM Coordinator exactly what properties to edit or insert to clear this flag.\n"
                             f"5. FORMAL ENGINEERING VERDICT: Formally declare an absolute engineering verdict at the very end. You must enclose the final verdict inside a standard markdown blockquote (e.g., '> ### 🔴 VERDICT: UNVERIFIED DUE TO DATA GAP') so that it renders as a cleanly highlighted visual card in Streamlit."
@@ -114,7 +158,7 @@ with col2:
                         except Exception: 
                             response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
                         
-                        st.markdown("### 🤖 Hybrid Discrepancy Audit Report")
+                        st.markdown("### 🤖 Hybrid Graph-RAG Compliance Report")
                         st.info(response.text)
                         
                     except Exception as e:
