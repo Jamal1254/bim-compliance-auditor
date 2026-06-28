@@ -16,8 +16,18 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.header("⚙️ Audit Parameters")
-    raw_gemini_key = st.text_input("🔑 Paste Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
     
+    # 1. Look for a hidden environment variable or Streamlit cloud configuration secret
+    configured_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+    
+    # 2. Render UI condition dynamically based on authorization state
+    if configured_key:
+        st.success("🔒 API Key Loaded Securely From Server Profile")
+        gemini_key = configured_key.strip()
+    else:
+        raw_gemini_key = st.text_input("🔑 Paste Gemini API Key", type="password", help="Provide a key if it is not configured on your server.")
+        gemini_key = raw_gemini_key.strip() if raw_gemini_key else ""
+        
     st.subheader("📁 1. Upload 3D BIM Model")
     ifc_file = st.file_uploader("Upload .ifc file", type=["ifc"])
     search_keyword = st.text_input("BIM Component Type to Audit", value="Wall")
@@ -32,11 +42,9 @@ with col2:
     st.header("📊 Live Compliance Audit Report")
     
     if run_audit:
-        if not ifc_file or not pdf_file or not raw_gemini_key:
-            st.error("⚠️ Please provide all files and the API Key.")
+        if not ifc_file or not pdf_file or not gemini_key:
+            st.error("⚠️ Please provide all files and ensure the Gemini API Key is available.")
         else:
-            gemini_key = raw_gemini_key.strip()
-            
             # === STEP 1: TARGETED SEMANTIC TEXT RETRIEVAL ===
             relevant_chunks = []
             with st.spinner("📄 Extracting technical contract clauses..."):
@@ -155,7 +163,7 @@ with col2:
                             response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
                         
                         st.markdown("### 🤖 Hybrid Graph-RAG Compliance Report")
-                        st.info(response.text)
+                        st.markdown(response.text)
                         
                     except Exception as e:
                         st.error(f"❌ Hybrid AI Analysis Failed. Please check if your Gemini API key is valid and active. Error details: {e}")
