@@ -173,9 +173,3 @@ with col2:
             else:
                 st.error(f"Could not find any 3D component matching the term '{search_keyword}' inside your uploaded IFC model file.")
 
-# Save the generated Graph-RAG report directly to a local text file so you don't lose it
-with open("graph_rag_compliance_output.txt", "a", encoding="utf-8") as f:
-    f.write(f"\n\n=== COMPLIANCE REPORT FOR ELEMENT: {ifc_data.get('GlobalId', 'Unknown')} ===\n")
-    f.write(response.text)
-
-print(f"DEBUG: Successfully processed and appended report for element {ifc_data.get('GlobalId')} to local text file.")
