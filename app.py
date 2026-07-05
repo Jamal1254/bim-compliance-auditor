@@ -167,7 +167,7 @@ with col2:
                         
                         st.markdown("### 🤖 Hybrid Graph-RAG Compliance Report")
                         st.markdown(response.text)
-                        
+                        print(response.text)
                         # --- SAFE CACHING & EXPORT ZONE ---
                         try:
                             # 1. Write result to container disk architecture
