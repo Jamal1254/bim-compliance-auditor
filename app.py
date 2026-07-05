@@ -172,3 +172,5 @@ with col2:
                         st.error(f"❌ Hybrid AI Analysis Failed. Please check if your Gemini API key is valid and active. Error details: {e}")
             else:
                 st.error(f"Could not find any 3D component matching the term '{search_keyword}' inside your uploaded IFC model file.")
+print(f"DEBUG: Compliance processing complete! Total elements evaluated: {len(results_dataframe)}")
+print(results_dataframe.head(50)) # Prints the first 50 rows directly to terminal
