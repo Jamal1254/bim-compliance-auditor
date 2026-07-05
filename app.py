@@ -172,5 +172,10 @@ with col2:
                         st.error(f"❌ Hybrid AI Analysis Failed. Please check if your Gemini API key is valid and active. Error details: {e}")
             else:
                 st.error(f"Could not find any 3D component matching the term '{search_keyword}' inside your uploaded IFC model file.")
-print(f"DEBUG: Compliance processing complete! Total elements evaluated: {len(results_dataframe)}")
-print(results_dataframe.head(50)) # Prints the first 50 rows directly to terminal
+
+# Save the generated Graph-RAG report directly to a local text file so you don't lose it
+with open("graph_rag_compliance_output.txt", "a", encoding="utf-8") as f:
+    f.write(f"\n\n=== COMPLIANCE REPORT FOR ELEMENT: {ifc_data.get('GlobalId', 'Unknown')} ===\n")
+    f.write(response.text)
+
+print(f"DEBUG: Successfully processed and appended report for element {ifc_data.get('GlobalId')} to local text file.")
