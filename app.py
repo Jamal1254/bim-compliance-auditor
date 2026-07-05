@@ -168,8 +168,27 @@ with col2:
                         st.markdown("### 🤖 Hybrid Graph-RAG Compliance Report")
                         st.markdown(response.text)
                         
+                        # --- SAFE CACHING & EXPORT ZONE ---
+                        try:
+                            # 1. Write result to container disk architecture
+                            with open("graph_rag_compliance_output.txt", "a", encoding="utf-8") as f:
+                                f.write(f"\n\n=== COMPLIANCE REPORT FOR ELEMENT: {ifc_data.get('GlobalId', 'Unknown')} ===\n")
+                                f.write(response.text)
+                            
+                            # 2. Render a UI interactive download button allowing text export
+                            with open("graph_rag_compliance_output.txt", "r", encoding="utf-8") as file_to_download:
+                                st.download_button(
+                                    label="📥 Download Full Compliance Text Report",
+                                    data=file_to_download.read(),
+                                    file_name="graph_rag_compliance_output.txt",
+                                    mime="text/plain",
+                                    key=f"dl_{ifc_data.get('GlobalId', 'default')}"
+                                )
+                        except Exception as file_io_err:
+                            st.sidebar.error(f"File Export Processing Postponed: {file_io_err}")
+                        # ----------------------------------
+                        
                     except Exception as e:
                         st.error(f"❌ Hybrid AI Analysis Failed. Please check if your Gemini API key is valid and active. Error details: {e}")
             else:
                 st.error(f"Could not find any 3D component matching the term '{search_keyword}' inside your uploaded IFC model file.")
-
