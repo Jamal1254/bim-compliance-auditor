@@ -2,9 +2,11 @@ import os
 import tempfile
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from google import genai
+from google.genai import types
 from pypdf import PdfReader
 import streamlit as st
 
+# Set Streamlit Page Configuration
 st.set_page_config(
     page_title="BIM Hybrid Auditor", page_icon="🏗️", layout="wide"
 )
@@ -97,7 +99,7 @@ with col2:
                 else "No explicitly matching spec clauses isolated."
             )
 
-            # === STEP 2: EXACT BATCH STRUCTURED BIM EXTRACTION ===
+            # === STEP 2: BATCH IFC DATA EXTRACTION ===
             with tempfile.NamedTemporaryFile(
                 delete=False, suffix=".ifc"
             ) as tmp_file:
@@ -188,6 +190,12 @@ with col2:
                     try:
                         client = genai.Client(api_key=gemini_key)
 
+                        # Configure response generation for maximum token output and concise formatting
+                        gen_config = types.GenerateContentConfig(
+                            max_output_tokens=8192,
+                            temperature=0.1,
+                        )
+
                         prompt = (
                             "You are an expert Structural and BIM Compliance"
                             " Engineer executing a project-wide quality"
@@ -199,35 +207,43 @@ with col2:
                             f"{wall_summary_text}\n\n"
                             "TARGETED SEMANTIC SPECIFICATION CLAUSES:\n"
                             f"{targeted_spec_context}\n\n"
-                            "Instructions for Report Generation:\n"
+                            "INSTRUCTIONS FOR COMPLETE REPORT GENERATION:\n"
                             "1. 📊 EXECUTIVE COMPLIANCE MATRIX: Provide a clean"
-                            " Markdown table summarizing EVERY wall audited with"
-                            " columns: | Global ID | Wall Name | IFC Class |"
-                            " Model Thickness | Spec Target | Status (COMPLIANT"
-                            " / CRITICAL ERROR / MISMATCH) |.\n"
+                            " Markdown table summarizing wall types into distinct"
+                            " groups/categories (e.g., Party Wall, Basic Wall,"
+                            " Curtain Wall) with columns: | Wall Category / Name"
+                            " | Total Count | Sample Global ID | Model"
+                            " Thickness | Spec Requirement | Compliance Status |."
+                            " (Group similar types together to keep the response"
+                            " concise and clear).\n"
                             "2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS: Analyze"
                             " major architectural data gaps, unit errors, or"
                             " missing material relationships across the"
                             " project.\n"
                             "3. 📄 SPECIFICATION CLASH: Highlight direct clashes"
-                            " (e.g. unapproved storefronts, missing party wall"
+                            " (e.g., unapproved storefronts, missing party wall"
                             " cavity dimensions, thickness non-compliance).\n"
                             "4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Provide"
-                            " bulleted instructions grouped explicitly by"
+                            " bulleted instructions grouped by Wall Category and"
                             " Global ID telling the BIM Coordinator how to fix"
                             " each failing element in Revit.\n"
                             "5. FORMAL ENGINEERING VERDICT: End with an"
                             " overall project verdict enclosed inside a markdown"
-                            " blockquote card."
+                            " blockquote card (e.g., > ### 🔴 VERDICT: NON-COMPLIANT)."
                         )
 
+                        # Generate structured response
                         try:
                             response = client.models.generate_content(
-                                model="gemini-2.5-flash", contents=prompt
+                                model="gemini-2.5-flash",
+                                contents=prompt,
+                                config=gen_config,
                             )
                         except Exception:
                             response = client.models.generate_content(
-                                model="gemini-2.0-flash", contents=prompt
+                                model="gemini-2.0-flash",
+                                contents=prompt,
+                                config=gen_config,
                             )
 
                         st.markdown("### 🤖 Complete Project Batch Compliance Report")
