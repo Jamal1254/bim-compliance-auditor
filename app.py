@@ -1,12 +1,12 @@
 import os
 import tempfile
+from collections import defaultdict
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from google import genai
 from google.genai import types
 from pypdf import PdfReader
 import streamlit as st
 
-# Set Streamlit Page Configuration
 st.set_page_config(
     page_title="BIM Hybrid Auditor", page_icon="🏗️", layout="wide"
 )
@@ -22,7 +22,6 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.header("⚙️ Audit Parameters")
 
-    # 1. API Key Authorization Check
     configured_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get(
         "GEMINI_API_KEY", ""
     )
@@ -118,61 +117,40 @@ with col2:
             except Exception:
                 pass
 
-            # === STEP 3: GRAPH SYNCHRONIZATION & EVALUATION ===
+            # === STEP 3: PRE-GROUP WALL DATA IN PYTHON (PREVENTS LLM CUTOFF) ===
             if all_walls_data:
                 st.success(
                     f"✅ Extracted {len(all_walls_data)} '{search_keyword}'"
                     " instances from IFC Model"
                 )
 
-                # --- GRAPH-RAG BACKEND SYNCHRONIZATION ---
-                with st.spinner(
-                    "⛓️ Synchronizing All IFC Elements into Neo4j Knowledge"
-                    " Graph..."
-                ):
-                    try:
-                        from ifc_to_neo4j import IFCGraphMapper
+                # Group walls by Name and Type in Python to minimize token footprint
+                grouped_walls = defaultdict(list)
+                for w in all_walls_data:
+                    key = f"{w['Name']} ({w['Type']})"
+                    grouped_walls[key].append(w)
 
-                        mapper = IFCGraphMapper()
-                        mapper.clear_database()
-
-                        with tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".ifc"
-                        ) as graph_tmp:
-                            graph_tmp.write(ifc_file.getvalue())
-                            graph_tmp_path = graph_tmp.name
-
-                        mapper.upload_ifc_to_graph(graph_tmp_path)
-                        try:
-                            os.unlink(graph_tmp_path)
-                        except Exception:
-                            pass
-
-                        st.sidebar.success(
-                            "📊 Neo4j Graph Synchronized Successfully!"
-                        )
-                    except Exception as g_err:
-                        st.sidebar.warning(
-                            f"⚠️ Neo4j Sync Bypassed: {g_err}"
-                        )
-
-                # Format Summary Matrix for LLM
                 wall_summary_text = ""
-                for idx, w in enumerate(all_walls_data, 1):
+                for idx, (group_name, items) in enumerate(
+                    grouped_walls.items(), 1
+                ):
+                    sample = items[0]
                     mats_str = (
-                        ", ".join(w["Materials"])
-                        if w["Materials"]
+                        ", ".join(sample["Materials"])
+                        if sample["Materials"]
                         else "No associated materials populated"
                     )
+                    sample_gids = ", ".join([x["GlobalId"] for x in items[:3]])
+                    if len(items) > 3:
+                        sample_gids += f" (+{len(items)-3} more)"
+
                     wall_summary_text += (
-                        f"ITEM #{idx}:\n"
-                        f"- GlobalID: {w['GlobalId']}\n"
-                        f"- Name: {w['Name']}\n"
-                        f"- Class: {w['Type']}\n"
-                        f"- Thickness/Width: {w['Width']} mm\n"
-                        f"- Cavity Width: {w['CavityWidth']} mm\n"
-                        f"- Is External: {w['IsExternal']}\n"
-                        f"- Mapped Storey: {w['Storey']}\n"
+                        f"CATEGORY #{idx}: {group_name}\n"
+                        f"- Total Count: {len(items)}\n"
+                        f"- Sample Global IDs: {sample_gids}\n"
+                        f"- Model Thickness: {sample['Width']} mm\n"
+                        f"- Cavity Width: {sample['CavityWidth']} mm\n"
+                        f"- Is External: {sample['IsExternal']}\n"
                         f"- Materials: {mats_str}\n\n"
                     )
 
@@ -184,13 +162,12 @@ with col2:
 
                 # === STEP 4: HYBRID LLM BATCH AUDIT GENERATION ===
                 with st.spinner(
-                    "🧠 Frontier AI Evaluating All Model Instances Against PDF"
+                    "🧠 Frontier AI Evaluating Summarized Categories Against PDF"
                     " Specification..."
                 ):
                     try:
                         client = genai.Client(api_key=gemini_key)
 
-                        # Configure response generation for maximum token output and concise formatting
                         gen_config = types.GenerateContentConfig(
                             max_output_tokens=8192,
                             temperature=0.1,
@@ -200,39 +177,36 @@ with col2:
                             "You are an expert Structural and BIM Compliance"
                             " Engineer executing a project-wide quality"
                             " assurance audit.\n\n"
-                            "Cross-examine ALL extracted BIM model elements"
-                            " against the contract PDF specifications:\n\n"
-                            "EXTRACTED BIM MODEL ELEMENTS"
-                            f" ({len(all_walls_data)} Elements Total):\n"
+                            "Cross-examine the following pre-grouped BIM model"
+                            " categories against the contract PDF"
+                            " specifications:\n\n"
+                            "PRE-GROUPED BIM WALL CATEGORIES"
+                            f" ({len(all_walls_data)} Total Elements across"
+                            f" {len(grouped_walls)} Unique Categories):\n"
                             f"{wall_summary_text}\n\n"
                             "TARGETED SEMANTIC SPECIFICATION CLAUSES:\n"
                             f"{targeted_spec_context}\n\n"
                             "INSTRUCTIONS FOR COMPLETE REPORT GENERATION:\n"
-                            "1. 📊 EXECUTIVE COMPLIANCE MATRIX: Provide a clean"
-                            " Markdown table summarizing wall types into distinct"
-                            " groups/categories (e.g., Party Wall, Basic Wall,"
-                            " Curtain Wall) with columns: | Wall Category / Name"
+                            "1. 📊 EXECUTIVE COMPLIANCE MATRIX: Render a complete"
+                            " Markdown table with EXACT columns: | Wall Category"
                             " | Total Count | Sample Global ID | Model"
-                            " Thickness | Spec Requirement | Compliance Status |."
-                            " (Group similar types together to keep the response"
-                            " concise and clear).\n"
+                            " Thickness (mm) | Spec Requirement | Status"
+                            " (COMPLIANT / CRITICAL ERROR / MISMATCH) |.\n"
                             "2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS: Analyze"
-                            " major architectural data gaps, unit errors, or"
-                            " missing material relationships across the"
-                            " project.\n"
-                            "3. 📄 SPECIFICATION CLASH: Highlight direct clashes"
-                            " (e.g., unapproved storefronts, missing party wall"
-                            " cavity dimensions, thickness non-compliance).\n"
+                            " overall geometric gaps, unit errors, or missing"
+                            " material relationships across categories.\n"
+                            "3. 📄 SPECIFICATION CLASH: Detail direct clashes"
+                            " against contract PDF specifications (e.g., party"
+                            " walls, storefront systems, masonry cavity"
+                            " rules).\n"
                             "4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Provide"
-                            " bulleted instructions grouped by Wall Category and"
-                            " Global ID telling the BIM Coordinator how to fix"
-                            " each failing element in Revit.\n"
-                            "5. FORMAL ENGINEERING VERDICT: End with an"
-                            " overall project verdict enclosed inside a markdown"
-                            " blockquote card (e.g., > ### 🔴 VERDICT: NON-COMPLIANT)."
+                            " specific bulleted instructions per Wall Category"
+                            " for the Revit Coordinator.\n"
+                            "5. FORMAL ENGINEERING VERDICT: Conclude with a"
+                            " project verdict inside a markdown blockquote"
+                            " card."
                         )
 
-                        # Generate structured response
                         try:
                             response = client.models.generate_content(
                                 model="gemini-2.5-flash",
@@ -251,8 +225,8 @@ with col2:
 
                     except Exception as e:
                         st.error(
-                            "❌ Hybrid AI Analysis Failed. Please check your"
-                            f" Gemini API key. Error: {e}"
+                            "❌ Hybrid AI Analysis Failed. Check API Key. Error:"
+                            f" {e}"
                         )
             else:
                 st.error(
