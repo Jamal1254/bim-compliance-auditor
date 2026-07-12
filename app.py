@@ -7,6 +7,7 @@ from google.genai import types
 from pypdf import PdfReader
 import streamlit as st
 
+# Set Streamlit Page Configuration
 st.set_page_config(
     page_title="BIM Hybrid Auditor", page_icon="🏗️", layout="wide"
 )
@@ -22,6 +23,7 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.header("⚙️ Audit Parameters")
 
+    # 1. API Key Authorization Check
     configured_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get(
         "GEMINI_API_KEY", ""
     )
@@ -117,12 +119,43 @@ with col2:
             except Exception:
                 pass
 
-            # === STEP 3: PRE-GROUP WALL DATA IN PYTHON (PREVENTS LLM CUTOFF) ===
+            # === STEP 3: PRE-GROUP DATA & GRAPH SYNCHRONIZATION ===
             if all_walls_data:
                 st.success(
                     f"✅ Extracted {len(all_walls_data)} '{search_keyword}'"
                     " instances from IFC Model"
                 )
+
+                # --- GRAPH-RAG BACKEND SYNCHRONIZATION ---
+                with st.spinner(
+                    "⛓️ Synchronizing All IFC Elements into Neo4j Knowledge"
+                    " Graph..."
+                ):
+                    try:
+                        from ifc_to_neo4j import IFCGraphMapper
+
+                        mapper = IFCGraphMapper()
+                        mapper.clear_database()
+
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=".ifc"
+                        ) as graph_tmp:
+                            graph_tmp.write(ifc_file.getvalue())
+                            graph_tmp_path = graph_tmp.name
+
+                        mapper.upload_ifc_to_graph(graph_tmp_path)
+                        try:
+                            os.unlink(graph_tmp_path)
+                        except Exception:
+                            pass
+
+                        st.sidebar.success(
+                            "📊 Neo4j Graph Synchronized Successfully!"
+                        )
+                    except Exception as g_err:
+                        st.sidebar.warning(
+                            f"⚠️ Neo4j Sync Bypassed: {g_err}"
+                        )
 
                 # Group walls by Name and Type in Python to minimize token footprint
                 grouped_walls = defaultdict(list)
@@ -168,43 +201,51 @@ with col2:
                     try:
                         client = genai.Client(api_key=gemini_key)
 
+                        # Strict formatting rules to prevent table line rendering loops
+                        system_instruction = (
+                            "You are a Lead Structural and BIM Compliance"
+                            " Auditor. CRITICAL FORMATTING RULE: Keep Markdown"
+                            " tables clean, concise, and short. Never generate"
+                            " long repeating dashed separator lines in Markdown"
+                            " tables. Keep table cell descriptions under 15"
+                            " words."
+                        )
+
                         gen_config = types.GenerateContentConfig(
                             max_output_tokens=8192,
                             temperature=0.1,
+                            system_instruction=system_instruction,
                         )
 
                         prompt = (
-                            "You are an expert Structural and BIM Compliance"
-                            " Engineer executing a project-wide quality"
-                            " assurance audit.\n\n"
-                            "Cross-examine the following pre-grouped BIM model"
-                            " categories against the contract PDF"
-                            " specifications:\n\n"
-                            "PRE-GROUPED BIM WALL CATEGORIES"
+                            "Cross-examine the following BIM wall categories"
+                            " against the contract PDF specifications:\n\n"
+                            "PRE-GROUPED BIM WALL DATA"
                             f" ({len(all_walls_data)} Total Elements across"
-                            f" {len(grouped_walls)} Unique Categories):\n"
+                            f" {len(grouped_walls)} Categories):\n"
                             f"{wall_summary_text}\n\n"
-                            "TARGETED SEMANTIC SPECIFICATION CLAUSES:\n"
-                            f"{targeted_spec_context}\n\n"
-                            "INSTRUCTIONS FOR COMPLETE REPORT GENERATION:\n"
-                            "1. 📊 EXECUTIVE COMPLIANCE MATRIX: Render a complete"
-                            " Markdown table with EXACT columns: | Wall Category"
-                            " | Total Count | Sample Global ID | Model"
-                            " Thickness (mm) | Spec Requirement | Status"
-                            " (COMPLIANT / CRITICAL ERROR / MISMATCH) |.\n"
-                            "2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS: Analyze"
-                            " overall geometric gaps, unit errors, or missing"
-                            " material relationships across categories.\n"
-                            "3. 📄 SPECIFICATION CLASH: Detail direct clashes"
-                            " against contract PDF specifications (e.g., party"
-                            " walls, storefront systems, masonry cavity"
-                            " rules).\n"
-                            "4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER: Provide"
-                            " specific bulleted instructions per Wall Category"
-                            " for the Revit Coordinator.\n"
-                            "5. FORMAL ENGINEERING VERDICT: Conclude with a"
-                            " project verdict inside a markdown blockquote"
-                            " card."
+                            "CONTRACT SPECIFICATION"
+                            f" CLAUSES:\n{targeted_spec_context}\n\n"
+                            "REPORT SECTIONS REQUIRED:\n"
+                            "1. 📊 EXECUTIVE COMPLIANCE MATRIX:\n"
+                            "   Create a clean Markdown table with columns: |"
+                            " Category | Count | Sample ID | Model Width | Spec"
+                            " Target | Status |\n"
+                            "   Keep cell text concise for proper text"
+                            " wrapping.\n\n"
+                            "2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS:\n"
+                            "   Summarize overall geometric gaps, material"
+                            " gaps, or unit issues across categories.\n\n"
+                            "3. 📄 SPECIFICATION CLASH:\n"
+                            "   Detail specific contract violations (e.g.,"
+                            " party wall acoustic gaps, unapproved storefronts,"
+                            " thickness errors).\n\n"
+                            "4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER:\n"
+                            "   Provide a bulleted list of fixes for the"
+                            " Revit coordinator grouped by Global ID/Category.\n\n"
+                            "5. FORMAL ENGINEERING VERDICT:\n"
+                            "   End with a highlighted blockquote verdict card"
+                            " (e.g., > ### 🔴 VERDICT: NON-COMPLIANT)."
                         )
 
                         try:
