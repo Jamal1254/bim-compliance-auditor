@@ -201,14 +201,12 @@ with col2:
                     try:
                         client = genai.Client(api_key=gemini_key)
 
-                        # Strict formatting rules to prevent table line rendering loops
                         system_instruction = (
                             "You are a Lead Structural and BIM Compliance"
-                            " Auditor. CRITICAL FORMATTING RULE: Keep Markdown"
-                            " tables clean, concise, and short. Never generate"
-                            " long repeating dashed separator lines in Markdown"
-                            " tables. Keep table cell descriptions under 15"
-                            " words."
+                            " Auditor. CRITICAL RULE: Keep all responses"
+                            " concise and structured using bullet points. Table"
+                            " cells must remain under 10 words. Ensure all 5"
+                            " sections finish cleanly."
                         )
 
                         gen_config = types.GenerateContentConfig(
@@ -226,26 +224,33 @@ with col2:
                             f"{wall_summary_text}\n\n"
                             "CONTRACT SPECIFICATION"
                             f" CLAUSES:\n{targeted_spec_context}\n\n"
+                            "CRITICAL REQUIREMENT: Keep all section analyses"
+                            " bulleted and direct to ensure complete report"
+                            " generation without cutting off.\n\n"
                             "REPORT SECTIONS REQUIRED:\n"
                             "1. 📊 EXECUTIVE COMPLIANCE MATRIX:\n"
-                            "   Create a clean Markdown table with columns: |"
-                            " Category | Count | Sample ID | Model Width | Spec"
-                            " Target | Status |\n"
-                            "   Keep cell text concise for proper text"
-                            " wrapping.\n\n"
+                            "   Render a clean Markdown table: | Category |"
+                            " Count | Sample ID | Model Width | Spec Target |"
+                            " Status |.\n"
+                            "   (Keep descriptions under 10 words per"
+                            " cell).\n\n"
                             "2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS:\n"
-                            "   Summarize overall geometric gaps, material"
-                            " gaps, or unit issues across categories.\n\n"
+                            "   Provide a short 3-4 bullet point summary of"
+                            " major model discrepancies (e.g., misclassified"
+                            " plumbing fixtures, missing material names).\n\n"
                             "3. 📄 SPECIFICATION CLASH:\n"
-                            "   Detail specific contract violations (e.g.,"
-                            " party wall acoustic gaps, unapproved storefronts,"
-                            " thickness errors).\n\n"
+                            "   Provide 3-4 key bullet points detailing direct"
+                            " contract violations (e.g., Rainscreen vs."
+                            " Masonry cavity clash, stud thickness"
+                            " deviations).\n\n"
                             "4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER:\n"
-                            "   Provide a bulleted list of fixes for the"
-                            " Revit coordinator grouped by Global ID/Category.\n\n"
+                            "   Provide bulleted instructions for the Revit"
+                            " Coordinator grouped by key Global IDs/Categories"
+                            " to resolve all flags.\n\n"
                             "5. FORMAL ENGINEERING VERDICT:\n"
-                            "   End with a highlighted blockquote verdict card"
-                            " (e.g., > ### 🔴 VERDICT: NON-COMPLIANT)."
+                            "   Conclude with a final verdict blockquote card"
+                            " (e.g., > ### 🔴 VERDICT: CRITICAL NON-COMPLIANCE -"
+                            " REVISION REQUIRED)."
                         )
 
                         try:
