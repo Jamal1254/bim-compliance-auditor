@@ -5,7 +5,7 @@ import streamlit as st
 class IFCGraphMapper:
     def __init__(self):
         # Read securely from Streamlit's configuration layer
-        uri = st.secrets.get("NEO4J_URI", "neo4j+s://888c7470.databases.neo4j.io")
+        uri = st.secrets.get("NEO4J_URI", "neo4j+s://8f945db7.databases.neo4j.io")
         username = st.secrets.get("NEO4J_USERNAME", "neo4j")
         password = st.secrets.get("NEO4J_PASSWORD", "password")
         self.database = st.secrets.get("NEO4J_DATABASE", "neo4j")
