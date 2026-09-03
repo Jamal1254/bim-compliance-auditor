@@ -4,11 +4,11 @@ import streamlit as st
 
 class IFCGraphMapper:
     def __init__(self):
-        # Read securely from Streamlit's secrets configuration with updated instance defaults
+        # Updated defaults matching your instance credentials file
         uri = st.secrets.get("NEO4J_URI", "neo4j+s://cf515c86.databases.neo4j.io")
-        username = st.secrets.get("NEO4J_USERNAME", "neo4j")
+        username = st.secrets.get("NEO4J_USERNAME", "cf515c86")
         password = st.secrets.get("NEO4J_PASSWORD", "pwToINeEQUP8EctkjlHYZcOlWfb8RhI6TF32qtczq6M")
-        self.database = st.secrets.get("NEO4J_DATABASE", "neo4j")
+        self.database = st.secrets.get("NEO4J_DATABASE", "cf515c86")
         
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
@@ -29,9 +29,7 @@ class IFCGraphMapper:
 
     def upload_ifc_to_graph(self, ifc_filepath):
         """Parses the IFC model and maps core architectural entities and relationships."""
-        # Ensure graph indexes exist before writing elements
         self.setup_constraints()
-        
         ifc_model = ifcopenshell.open(ifc_filepath)
         
         with self.driver.session(database=self.database) as session:
@@ -45,7 +43,7 @@ class IFCGraphMapper:
                     name=storey.Name or "Unnamed Level"
                 )
 
-            # 2. Map Structural Components (Walls, CurtainWalls, Columns, Slabs, etc.)
+            # 2. Map Structural Components
             products = ifc_model.by_type("IfcProduct")
             for product in products:
                 if product.is_a("IfcSpatialStructureElement"):
