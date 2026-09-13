@@ -192,8 +192,8 @@ with col2:
                         system_instruction = (
                             "You are a Senior Structural and BIM Compliance Auditor. "
                             "Your job is to cross-examine extracted IFC wall geometry against the provided Contract Specification PDF. "
-                            "You must generate an Executive Compliance Matrix table formatted like a laboratory test report, "
-                            "comparing actual IFC model values directly against contract PDF requirements for every wall category."
+                            "Generate a concise, well-structured compliance report. Use a compact lab-style matrix "
+                            "to compare actual model values directly against contract requirements."
                         )
 
                         gen_config = types.GenerateContentConfig(
@@ -208,20 +208,23 @@ with col2:
                             f"{targeted_spec_context}\n\n"
                             "--- EXTRACTED IFC MODEL WALL DATA ---\n"
                             f"{wall_summary_text}\n\n"
+                            "INSTRUCTIONS TO PREVENT TRUNCATION:\n"
+                            "- Maintain concise, clear analysis.\n"
+                            "- Group similar wall types into consolidated rows in the Executive Compliance Matrix table.\n\n"
                             "REQUIRED REPORT SECTIONS:\n\n"
                             "1. 📊 EXECUTIVE COMPLIANCE MATRIX:\n"
                             "   Generate a Markdown table formatted like a laboratory test report. It MUST have these exact columns:\n"
-                            "   | Wall Category / Type | Element Count | IFC Model Thickness | Contract Spec Required Thickness | IFC Model Materials | Contract Spec Required Materials | Compliance Status (PASS / FAIL / MISSING DATA) |\n"
-                            "   - For every category, evaluate the actual model value side-by-side with what the PDF contract specifies.\n"
-                            "   - If a spec value is not explicitly stated in the PDF text, write 'Not Specified in PDF'.\n\n"
+                            "   | Wall Category / Type | Element Count | IFC Model Thickness | Contract Spec Required Thickness | IFC Model Materials | Contract Spec Required Materials | Compliance Status |\n"
+                            "   - Compare IFC values side-by-side with contract PDF requirements.\n"
+                            "   - Mark status as PASS, FAIL, or MISSING DATA.\n\n"
                             "2. 📄 CONTRACT SPECIFICATION REQUIREMENTS:\n"
-                            "   List the exact clauses, dimensions, R-values, threshold insulation, and material requirements extracted from the contract PDF.\n\n"
+                            "   List key clauses, dimensions, R-values, threshold insulation, and material requirements extracted from the PDF.\n\n"
                             "3. 🔍 GEOMETRIC & SPECIFICATION DISCREPANCIES:\n"
-                            "   Detail every non-compliance issue where IFC model values deviate from contract requirements.\n\n"
+                            "   Summarize all major non-compliance issues and missing model data concisely using bullet points.\n\n"
                             "4. 🛠️ ACTIONABLE CORRECTION INSTRUCTIONS:\n"
-                            "   Provide explicit correction guidance for the BIM Coordinator with exact Global IDs.\n\n"
+                            "   Provide direct step-by-step guidance for the BIM Coordinator referencing key Global IDs.\n\n"
                             "5. 🏛️ FORMAL AUDIT VERDICT:\n"
-                            "   State the overall result (APPROVED / REVISION REQUIRED) inside a Markdown blockquote card."
+                            "   State the final approval state (APPROVED or REVISION REQUIRED) inside a Markdown blockquote card."
                         )
 
                         try:
