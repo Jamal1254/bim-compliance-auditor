@@ -252,8 +252,28 @@ with col2:
                             "If the provided contract text genuinely does not specify a value, say so plainly rather than guessing."
                         )
 
+                        # Gemini 2.5 Flash supports up to 65,536 output
+                        # tokens (the old 8,192 cap was from a smaller/older
+                        # model and silently truncated large reports, e.g.
+                        # once wall categories multiplied past ~6-7).
+                        # It's also a "thinking" model by default, whose
+                        # internal reasoning draws from the SAME token
+                        # budget as the visible answer - left unchecked,
+                        # that can eat the whole budget and leave
+                        # response.text empty. We disable thinking here
+                        # since a structured compliance table doesn't need
+                        # chain-of-thought reasoning to fill in.
                         gen_config = types.GenerateContentConfig(
-                            max_output_tokens=8192,
+                            max_output_tokens=32768,
+                            temperature=0.1,
+                            system_instruction=system_instruction,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0),
+                        )
+                        # Gemini 2.0 Flash (the fallback below) isn't a
+                        # thinking model and its config shape differs
+                        # slightly, so build it without thinking_config.
+                        gen_config_fallback = types.GenerateContentConfig(
+                            max_output_tokens=32768,
                             temperature=0.1,
                             system_instruction=system_instruction,
                         )
@@ -293,7 +313,7 @@ with col2:
                             response = client.models.generate_content(
                                 model="gemini-2.0-flash",
                                 contents=prompt,
-                                config=gen_config,
+                                config=gen_config_fallback,
                             )
 
                         # response.text can raise, or come back empty, if the
@@ -304,12 +324,13 @@ with col2:
                         except Exception:
                             report_text = None
 
+                        finish_reason = None
+                        try:
+                            finish_reason = response.candidates[0].finish_reason
+                        except Exception:
+                            pass
+
                         if not report_text:
-                            finish_reason = None
-                            try:
-                                finish_reason = response.candidates[0].finish_reason
-                            except Exception:
-                                pass
                             st.error(
                                 "❌ The AI returned no usable text (finish_reason:"
                                 f" {finish_reason}). This can happen if the response"
@@ -317,6 +338,17 @@ with col2:
                                 " the amount of input data."
                             )
                         else:
+                            finish_reason_name = getattr(finish_reason, "name", str(finish_reason))
+                            if finish_reason_name == "MAX_TOKENS":
+                                st.warning(
+                                    "⚠️ This report was cut off before finishing"
+                                    " - the model ran out of output budget partway"
+                                    " through (large model with many wall"
+                                    " categories). The content below is real but"
+                                    " incomplete; consider narrowing the search"
+                                    " keyword to audit fewer categories at once,"
+                                    " or re-running."
+                                )
                             st.markdown(report_text)
 
                     except Exception as e:
