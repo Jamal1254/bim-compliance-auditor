@@ -38,6 +38,23 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
 
     all_matched_elements = []
 
+    # IFC classes that are routinely NAMED after the thing they're mounted on
+    # or adjacent to (e.g. "Wall Lamp", "Toilet-Commercial-Wall-3D",
+    # "Railing:Pipe-Wall Mount", "Door-Curtain-Wall-Double-Storefront").
+    # A name-only match on a generic keyword like "Wall" pulls these in even
+    # though they are fixtures/openings, not structural wall elements. We
+    # still trust a match on the IFC *class* itself (e.g. IfcCurtainWall),
+    # since that's an unambiguous structural signal - this list only blocks
+    # the name-substring path for classes that are known false-positive
+    # sources.
+    NON_STRUCTURAL_EXCLUDE_TYPES = {
+        "IfcDoor", "IfcWindow",
+        "IfcFurnishingElement", "IfcFurniture",
+        "IfcFlowTerminal", "IfcSanitaryTerminal",
+        "IfcRailing", "IfcLightFixture",
+        "IfcProxy", "IfcBuildingElementProxy",
+    }
+
     # Gather ALL candidate elements (IfcWall, IfcWallStandardCase, IfcCurtainWall, etc.)
     for element in ifc_file.by_type("IfcProduct"):
         if element.is_a("IfcOpeningElement") or element.is_a("IfcOpening"):
@@ -46,11 +63,12 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
         el_type = element.is_a()
         el_name = str(getattr(element, "Name", ""))
 
-        # Check if the search keyword exists in either the IFC Class or the Element Name
-        if (
-            search_keyword.lower() in el_type.lower()
-            or search_keyword.lower() in el_name.lower()
-        ):
+        type_match = search_keyword.lower() in el_type.lower()
+        name_match = search_keyword.lower() in el_name.lower()
+
+        if type_match:
+            all_matched_elements.append(element)
+        elif name_match and el_type not in NON_STRUCTURAL_EXCLUDE_TYPES:
             all_matched_elements.append(element)
 
     if not all_matched_elements:
@@ -70,15 +88,45 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
             "Storey": "Unknown",
         }
 
-        # Extract Spatial Zone / Storey Level
-        if hasattr(target_element, "Decomposes"):
-            for rel in target_element.Decomposes:
+        # Extract Spatial Zone / Storey Level.
+        # Spatial containment (element -> storey) is carried by
+        # IfcRelContainedInSpatialStructure, exposed on the element via the
+        # inverse attribute `ContainedInStructure`. `Decomposes` carries
+        # IfcRelAggregates instead (e.g. a wall part belonging to a curtain
+        # wall) and will essentially never contain a spatial-structure
+        # relationship, so it was never matching before.
+        if hasattr(target_element, "ContainedInStructure"):
+            for rel in target_element.ContainedInStructure:
                 if rel.is_a("IfcRelContainedInSpatialStructure"):
                     data["Storey"] = getattr(
                         rel.RelatingStructure, "Name", "Unknown"
                     )
+                    break
 
-        # Extract Associated Materials (IfcMaterial / IfcMaterialLayerSet)
+        # Fallback: if the element itself has no direct spatial containment
+        # (e.g. it's an aggregate part), inherit the storey from its
+        # decomposition parent.
+        if data["Storey"] == "Unknown" and hasattr(target_element, "Decomposes"):
+            for rel in target_element.Decomposes:
+                if rel.is_a("IfcRelAggregates"):
+                    parent = getattr(rel, "RelatingObject", None)
+                    if parent is not None and hasattr(parent, "ContainedInStructure"):
+                        for prel in parent.ContainedInStructure:
+                            if prel.is_a("IfcRelContainedInSpatialStructure"):
+                                data["Storey"] = getattr(
+                                    prel.RelatingStructure, "Name", "Unknown"
+                                )
+                                break
+                if data["Storey"] != "Unknown":
+                    break
+
+        # Extract Associated Materials (IfcMaterial / IfcMaterialLayerSet).
+        # While walking the layers, also remember the thickness of any layer
+        # that looks like a cavity/air gap - this feeds a cavity-width
+        # fallback below for the (common) case where no explicit
+        # "CavityWidth"-style property set exists, even though the material
+        # layer breakdown clearly shows one (e.g. "Cavity Fill (150.02mm)").
+        cavity_thickness_from_materials = None
         try:
             mats = ifcopenshell.util.element.get_material(target_element)
             if mats:
@@ -93,6 +141,13 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                             else 0
                         )
                         data["Materials"].append(f"{mat_name} ({thick}mm)")
+
+                        if (
+                            cavity_thickness_from_materials is None
+                            and mat_name
+                            and ("cavity" in mat_name.lower() or mat_name.lower() == "air")
+                        ):
+                            cavity_thickness_from_materials = thick
                 elif hasattr(mats, "Materials"):
                     for m in mats.Materials:
                         data["Materials"].append(
@@ -166,6 +221,13 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                 data["CavityWidth"] = flat_props[ck]
                 break
 
+        # Fallback: no explicit cavity property, but the material layer
+        # breakdown already showed a cavity/air layer - use its thickness
+        # rather than reporting "None/Undefined" when the data is right
+        # there in the materials list.
+        if data["CavityWidth"] == "None/Undefined" and cavity_thickness_from_materials is not None:
+            data["CavityWidth"] = f"{cavity_thickness_from_materials} (from material layer)"
+
         # Fallback 2: Name/Type Regex Mining
         if data["Width"] == "Unknown":
             search_string = f"{data['Name']} {data['Type']}"
@@ -180,7 +242,17 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                 except (ValueError, TypeError):
                     pass
 
-        # Fallback 3: Direct 3D Bounding Box Geometry Extrusion Processing
+        # Fallback 3: Direct 3D Bounding Box Geometry Extrusion Processing.
+        # This assumes an axis-aligned, roughly rectangular element where the
+        # shortest horizontal bounding-box side approximates wall thickness.
+        # That assumption breaks for L-shaped runs, curved segments, or
+        # walls at odd angles - on those elements this fallback can return
+        # something closer to the wall's *length* than its thickness, which
+        # is silently wrong rather than obviously wrong. We cap what we'll
+        # accept as a plausible thickness and flag anything above it instead
+        # of presenting it as a clean number.
+        MAX_PLAUSIBLE_THICKNESS_MM = 600.0  # generous upper bound; even thick masonry cavity walls fall well under this
+
         if data["Width"] == "Unknown":
             try:
                 settings = ifcopenshell.geom.settings()
@@ -204,7 +276,15 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                     # Compute thickness using actual model scale factors
                     computed_thickness = min(dx, dy) * unit_scale_to_mm
                     if computed_thickness > 0:
-                        data["Width"] = round(computed_thickness, 2)
+                        if computed_thickness > MAX_PLAUSIBLE_THICKNESS_MM:
+                            data["Width"] = (
+                                f"Unreliable ({round(computed_thickness, 2)}mm from"
+                                " bounding-box fallback - exceeds plausible wall"
+                                " thickness; likely a non-rectangular or angled"
+                                " element)"
+                            )
+                        else:
+                            data["Width"] = round(computed_thickness, 2)
             except Exception:
                 pass
 
