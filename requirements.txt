@@ -1,4 +1,5 @@
 streamlit
+pandas
 pypdf
 ifcopenshell
 google-genai
