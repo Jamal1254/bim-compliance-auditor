@@ -127,10 +127,13 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
         # "CavityWidth"-style property set exists, even though the material
         # layer breakdown clearly shows one (e.g. "Cavity Fill (150.02mm)").
         cavity_thickness_from_materials = None
+        layer_thickness_sum = 0.0
+        has_layer_set = False
         try:
             mats = ifcopenshell.util.element.get_material(target_element)
             if mats:
                 if hasattr(mats, "ForLayerSet"):
+                    has_layer_set = True
                     for layer in mats.ForLayerSet.MaterialLayers:
                         mat_name = getattr(
                             layer.Material, "Name", "Unnamed Layer"
@@ -141,6 +144,7 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                             else 0
                         )
                         data["Materials"].append(f"{mat_name} ({thick}mm)")
+                        layer_thickness_sum += thick
 
                         if (
                             cavity_thickness_from_materials is None
@@ -188,31 +192,51 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                 if "isexternal" in k.lower() and v is True:
                     data["IsExternal"] = True
 
-        # Fallback 1: Deep Metadata Attribute Sweep
+        # Tier 0 (highest priority): sum of material layer thicknesses.
+        # This is the most trustworthy width source we have - it's the
+        # actual assembly build-up (brick + cavity + block + board, etc.)
+        # that we're already extracting for the Materials list, rather than
+        # a loosely name-matched property. On the models checked so far this
+        # summed value matched the "true" wall thickness almost exactly
+        # (within rounding), whereas the generic property-sweep below can
+        # pick up an unrelated same-named property (e.g. a panel/module
+        # width on a storefront-style assembly) and return something wildly
+        # wrong. Only trust this when there's an actual layer set AND the
+        # sum is a sane, non-zero number.
+        if has_layer_set and layer_thickness_sum > 0:
+            data["Width"] = round(layer_thickness_sum, 2)
+
+        # Fallback 1: Deep Metadata Attribute Sweep.
+        # More specific keys are tried before the bare "width" key, since a
+        # generic "Width" property (especially one merged in from the
+        # element's Type parameters) is the most likely to actually
+        # describe something other than wall thickness - e.g. a panel or
+        # module width in a curtain-wall-style assembly.
         width_keywords = [
-            "width",
-            "thickness",
-            "nominalthickness",
             "wallthickness",
             "overallthickness",
+            "nominalthickness",
             "thickness/width",
+            "thickness",
+            "width",
         ]
-        for kw in width_keywords:
-            if kw in flat_props and flat_props[kw] not in [
-                None,
-                "",
-                "Unknown",
-            ]:
-                try:
-                    val = float(flat_props[kw])
-                    # Apply unit conversion scale if needed
-                    if val < 5.0 and unit_scale_to_mm != 1.0:
-                        val = val * unit_scale_to_mm
-                    if val > 0:
-                        data["Width"] = round(val, 2)
-                        break
-                except (ValueError, TypeError):
-                    continue
+        if data["Width"] == "Unknown":
+            for kw in width_keywords:
+                if kw in flat_props and flat_props[kw] not in [
+                    None,
+                    "",
+                    "Unknown",
+                ]:
+                    try:
+                        val = float(flat_props[kw])
+                        # Apply unit conversion scale if needed
+                        if val < 5.0 and unit_scale_to_mm != 1.0:
+                            val = val * unit_scale_to_mm
+                        if val > 0:
+                            data["Width"] = round(val, 2)
+                            break
+                    except (ValueError, TypeError):
+                        continue
 
         # Extract Cavity Data
         cavity_keywords = ["cavity", "cavitywidth", "airgap", "voidwidth"]
@@ -247,12 +271,7 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
         # shortest horizontal bounding-box side approximates wall thickness.
         # That assumption breaks for L-shaped runs, curved segments, or
         # walls at odd angles - on those elements this fallback can return
-        # something closer to the wall's *length* than its thickness, which
-        # is silently wrong rather than obviously wrong. We cap what we'll
-        # accept as a plausible thickness and flag anything above it instead
-        # of presenting it as a clean number.
-        MAX_PLAUSIBLE_THICKNESS_MM = 600.0  # generous upper bound; even thick masonry cavity walls fall well under this
-
+        # something closer to the wall's *length* than its thickness.
         if data["Width"] == "Unknown":
             try:
                 settings = ifcopenshell.geom.settings()
@@ -276,17 +295,21 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                     # Compute thickness using actual model scale factors
                     computed_thickness = min(dx, dy) * unit_scale_to_mm
                     if computed_thickness > 0:
-                        if computed_thickness > MAX_PLAUSIBLE_THICKNESS_MM:
-                            data["Width"] = (
-                                f"Unreliable ({round(computed_thickness, 2)}mm from"
-                                " bounding-box fallback - exceeds plausible wall"
-                                " thickness; likely a non-rectangular or angled"
-                                " element)"
-                            )
-                        else:
-                            data["Width"] = round(computed_thickness, 2)
+                        data["Width"] = round(computed_thickness, 2)
             except Exception:
                 pass
+
+        # Universal sanity check - applied regardless of which tier above
+        # produced the value, since any of them (a mismatched property, a
+        # name-regex false hit, or a non-rectangular bounding box) can
+        # silently return something implausible. Flag rather than discard,
+        # so the raw number is still visible for manual review.
+        MAX_PLAUSIBLE_THICKNESS_MM = 600.0  # generous; even thick masonry cavity walls fall well under this
+        if isinstance(data["Width"], (int, float)) and data["Width"] > MAX_PLAUSIBLE_THICKNESS_MM:
+            data["Width"] = (
+                f"Unreliable ({data['Width']}mm - exceeds plausible wall"
+                " thickness; verify source property/geometry)"
+            )
 
         extracted_walls_data.append(data)
 
