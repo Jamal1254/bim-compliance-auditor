@@ -1,6 +1,5 @@
 import os
 import tempfile
-import pandas as pd
 from collections import defaultdict
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from google import genai
@@ -52,6 +51,94 @@ with col1:
         "🚀 Run Batch Compliance Audit", use_container_width=True
     )
 
+
+# ---------------------------------------------------------------------------
+# Spec-text extraction helpers
+# ---------------------------------------------------------------------------
+
+# Keep these terms specific to technical wall-construction content. Broad,
+# very common words ("wall", "mm", "specification") were removed - they
+# matched almost every paragraph in a typical construction PDF, which
+# silently defeated the "not enough matches -> fall back to fuller context"
+# logic below (the fallback branch was effectively unreachable).
+SPEC_SEARCH_TERMS_BASE = [
+    "thickness",
+    "width",
+    "cavity",
+    "insulation",
+    "external",
+    "structural",
+    "cladding",
+    "u-value",
+    "party wall",
+    "separating wall",
+    "building regulations",
+    "fire rating",
+    "blockwork",
+    "masonry",
+]
+
+MIN_CHUNK_LEN = 40           # ignore fragments too short to be a real clause
+MAX_CHUNK_CHARS = 14000      # rough context budget for the prompt
+MIN_MATCHED_CHUNKS = 3       # below this, fall back to fuller page context
+
+
+def chunk_page_text(text):
+    """Split page text into paragraph-like chunks.
+
+    Prefer blank-line paragraph breaks, since splitting a clause across
+    single lines (which is how many PDF extractors wrap text) tends to
+    separate a value like '110mm' from the wall type it describes. Only
+    fall back to single-newline splitting if the page has no blank lines
+    at all, so we don't end up with one giant undifferentiated blob.
+    """
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if len(paras) <= 1:
+        paras = [p.strip() for p in text.split("\n") if p.strip()]
+    return paras
+
+
+def extract_spec_context(pdf_file, search_keyword):
+    """Return (targeted_spec_context, matched_chunk_count) from the PDF."""
+    search_terms = [search_keyword.lower()] + SPEC_SEARCH_TERMS_BASE
+
+    reader = PdfReader(pdf_file)
+    matched_chunks = []
+    full_pages = []  # (page_num, text) for pages containing any search term
+
+    for page_num, page in enumerate(reader.pages, start=1):
+        text = page.extract_text()
+        if not text:
+            continue
+
+        page_has_match = False
+        for para in chunk_page_text(text):
+            low = para.lower()
+            if len(para) > MIN_CHUNK_LEN and any(term in low for term in search_terms):
+                matched_chunks.append(f"[Page {page_num}]: {para}")
+                page_has_match = True
+
+        if page_has_match:
+            full_pages.append((page_num, text.strip()))
+
+    if len(matched_chunks) >= MIN_MATCHED_CHUNKS:
+        context = "\n\n".join(matched_chunks)
+    elif full_pages:
+        # Too few clause-level matches to trust the narrow view - fall back
+        # to the full text of every page that had at least one hit, so the
+        # model sees complete clauses instead of isolated fragments.
+        context = "\n\n".join(
+            f"--- Page {n} ---\n{t}" for n, t in full_pages
+        )
+    else:
+        context = "No explicitly matching spec clauses isolated."
+
+    if len(context) > MAX_CHUNK_CHARS:
+        context = context[:MAX_CHUNK_CHARS] + "\n\n[...context truncated to fit budget...]"
+
+    return context, len(matched_chunks)
+
+
 with col2:
     st.header("📊 Live Compliance Audit Report")
 
@@ -62,43 +149,24 @@ with col2:
             )
         else:
             # === STEP 1: CONTRACT SPECIFICATION EXTRACTION ===
-            relevant_chunks = []
-            full_pdf_text = []
             with st.spinner("📄 Extracting technical contract clauses..."):
                 try:
-                    reader = PdfReader(pdf_file)
-                    search_terms = [
-                        search_keyword.lower(), "thickness", "width", "cavity",
-                        "insulation", "external", "structural", "cladding",
-                        "u-value", "party wall", "separating wall",
-                        "building regulations", "mm", "wall", "specification", "clause"
-                    ]
-                    
-                    for page_num, page in enumerate(reader.pages):
-                        text = page.extract_text()
-                        if text:
-                            full_pdf_text.append(f"--- Page {page_num + 1} ---\n{text}")
-                            for para in text.split("\n"):
-                                if any(term in para.lower() for term in search_terms) and len(para.strip()) > 15:
-                                    relevant_chunks.append(
-                                        f"[Page {page_num + 1}]: {para.strip()}"
-                                    )
+                    targeted_spec_context, matched_count = extract_spec_context(
+                        pdf_file, search_keyword
+                    )
                 except Exception as e:
                     st.error(f"Failed to process PDF text: {e}")
+                    targeted_spec_context = "No explicitly matching spec clauses isolated."
+                    matched_count = 0
 
-            # Fallback: If keyword search isolated too few lines, pass raw text pages directly
-            if relevant_chunks and len(relevant_chunks) > 5:
-                targeted_spec_context = "\n".join(relevant_chunks[:45])
-            else:
-                targeted_spec_context = "\n\n".join(full_pdf_text[:15])
-
-            # === STEP 2: BATCH IFC DATA EXTRACTION ===
+            # === STEP 2: WRITE IFC TO A TEMP FILE ONCE ===
             with tempfile.NamedTemporaryFile(
                 delete=False, suffix=".ifc"
             ) as tmp_file:
                 tmp_file.write(ifc_file.getvalue())
                 tmp_file_path = tmp_file.name
 
+            # === STEP 3: BATCH IFC DATA EXTRACTION ===
             with st.spinner(
                 f"📦 Parsing ALL 3D geometry properties for '{search_keyword}'..."
             ):
@@ -106,12 +174,7 @@ with col2:
                     tmp_file_path, search_keyword
                 )
 
-            try:
-                os.unlink(tmp_file_path)
-            except Exception:
-                pass
-
-            # === STEP 3: PRE-GROUP DATA & GRAPH SYNCHRONIZATION ===
+            # === STEP 4: PRE-GROUP DATA & GRAPH SYNCHRONIZATION ===
             if all_walls_data:
                 st.success(
                     f"✅ Extracted {len(all_walls_data)} '{search_keyword}'"
@@ -119,6 +182,8 @@ with col2:
                 )
 
                 # --- GRAPH-RAG BACKEND SYNCHRONIZATION ---
+                # Reuse the temp file already written above instead of
+                # writing the same IFC bytes to disk a second time.
                 with st.spinner(
                     "⛓️ Synchronizing All IFC Elements into Neo4j Knowledge Graph..."
                 ):
@@ -127,18 +192,7 @@ with col2:
 
                         mapper = IFCGraphMapper()
                         mapper.clear_database()
-
-                        with tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".ifc"
-                        ) as graph_tmp:
-                            graph_tmp.write(ifc_file.getvalue())
-                            graph_tmp_path = graph_tmp.name
-
-                        mapper.upload_ifc_to_graph(graph_tmp_path)
-                        try:
-                            os.unlink(graph_tmp_path)
-                        except Exception:
-                            pass
+                        mapper.upload_ifc_to_graph(tmp_file_path)
 
                         st.sidebar.success(
                             "📊 Neo4j Graph Synchronized Successfully!"
@@ -173,16 +227,17 @@ with col2:
                         f"- Model Thickness: {sample['Width']} mm\n"
                         f"- Cavity Width: {sample['CavityWidth']} mm\n"
                         f"- Is External: {sample['IsExternal']}\n"
+                        f"- Storey: {sample['Storey']}\n"
                         f"- Materials: {mats_str}\n\n"
                     )
 
                 # UI Expander for Extracted Specs
                 with st.expander(
-                    "🔍 View Isolated Semantic Spec Text Chunks"
+                    f"🔍 View Isolated Semantic Spec Text Chunks ({matched_count} clause matches)"
                 ):
                     st.text(targeted_spec_context)
 
-                # === STEP 4: HYBRID LLM BATCH AUDIT WITH LAB MATRIX ===
+                # === STEP 5: HYBRID LLM BATCH AUDIT WITH LAB MATRIX ===
                 with st.spinner(
                     "🧠 AI Cross-Examining IFC Wall Properties Against Contract Specifications..."
                 ):
@@ -193,7 +248,8 @@ with col2:
                             "You are a Senior Structural and BIM Compliance Auditor. "
                             "Your job is to cross-examine extracted IFC wall geometry against the provided Contract Specification PDF. "
                             "Generate a concise, well-structured compliance report. Use a compact lab-style matrix "
-                            "to compare actual model values directly against contract requirements."
+                            "to compare actual model values directly against contract requirements. "
+                            "If the provided contract text genuinely does not specify a value, say so plainly rather than guessing."
                         )
 
                         gen_config = types.GenerateContentConfig(
@@ -240,7 +296,28 @@ with col2:
                                 config=gen_config,
                             )
 
-                        st.markdown(response.text)
+                        # response.text can raise, or come back empty, if the
+                        # response was blocked or truncated - handle that
+                        # explicitly instead of letting st.markdown crash.
+                        try:
+                            report_text = response.text
+                        except Exception:
+                            report_text = None
+
+                        if not report_text:
+                            finish_reason = None
+                            try:
+                                finish_reason = response.candidates[0].finish_reason
+                            except Exception:
+                                pass
+                            st.error(
+                                "❌ The AI returned no usable text (finish_reason:"
+                                f" {finish_reason}). This can happen if the response"
+                                " was blocked or truncated - try again or reduce"
+                                " the amount of input data."
+                            )
+                        else:
+                            st.markdown(report_text)
 
                     except Exception as e:
                         st.error(
@@ -250,3 +327,9 @@ with col2:
                 st.warning(
                     f"⚠️ No elements matching '{search_keyword}' were found in the uploaded IFC file."
                 )
+
+            # === STEP 6: CLEAN UP TEMP FILE (single write, single delete) ===
+            try:
+                os.unlink(tmp_file_path)
+            except Exception:
+                pass
