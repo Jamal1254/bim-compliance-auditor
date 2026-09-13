@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import tempfile
 from collections import defaultdict
@@ -201,6 +203,39 @@ with col2:
                         st.sidebar.warning(
                             f"⚠️ Neo4j Sync Bypassed: {g_err}"
                         )
+
+                # --- FULL DATA EXPORT (completeness check) ---
+                # The narrative report below groups and summarizes these
+                # elements for the LLM, and LLMs can silently drop or merge
+                # categories when asked to "keep it concise." This CSV has
+                # every single extracted element, ungrouped, so you can
+                # always verify the report accounts for everything that was
+                # actually found - don't rely on the markdown table alone
+                # for completeness.
+                csv_buffer = io.StringIO()
+                csv_fields = [
+                    "GlobalId", "Name", "Type", "Storey",
+                    "Width", "CavityWidth", "IsExternal", "Materials",
+                ]
+                writer = csv.DictWriter(csv_buffer, fieldnames=csv_fields)
+                writer.writeheader()
+                for w in all_walls_data:
+                    row = {k: w.get(k, "") for k in csv_fields}
+                    row["Materials"] = "; ".join(w.get("Materials", []))
+                    writer.writerow(row)
+
+                st.download_button(
+                    label=f"⬇️ Download all {len(all_walls_data)} extracted elements (CSV)",
+                    data=csv_buffer.getvalue(),
+                    file_name="extracted_elements_full.csv",
+                    mime="text/csv",
+                )
+                st.caption(
+                    "The AI report below groups elements into categories for"
+                    " readability and may not list every one individually -"
+                    " use this CSV to verify all extracted elements are"
+                    " accounted for."
+                )
 
                 # Group walls by Name and Type in Python to optimize prompt space
                 grouped_walls = defaultdict(list)
