@@ -61,7 +61,7 @@ with col2:
                 "⚠️ Please provide all files and ensure the Gemini API Key is available."
             )
         else:
-            # === STEP 1: ROBUST CONTRACT SPECIFICATION EXTRACTION ===
+            # === STEP 1: CONTRACT SPECIFICATION EXTRACTION ===
             relevant_chunks = []
             full_pdf_text = []
             with st.spinner("📄 Extracting technical contract clauses..."):
@@ -86,7 +86,7 @@ with col2:
                 except Exception as e:
                     st.error(f"Failed to process PDF text: {e}")
 
-            # Fallback: If keyword search isolated too few lines, send raw text pages directly
+            # Fallback: If keyword search isolated too few lines, pass raw text pages directly
             if relevant_chunks and len(relevant_chunks) > 5:
                 targeted_spec_context = "\n".join(relevant_chunks[:45])
             else:
@@ -182,42 +182,18 @@ with col2:
                 ):
                     st.text(targeted_spec_context)
 
-                # === STEP 4: HYBRID LLM BATCH AUDIT GENERATION ===
+                # === STEP 4: HYBRID LLM BATCH AUDIT WITH LAB MATRIX ===
                 with st.spinner(
                     "🧠 AI Cross-Examining IFC Wall Properties Against Contract Specifications..."
                 ):
                     try:
                         client = genai.Client(api_key=gemini_key)
 
-                        # Render Native Interactive Dataframe for Wall Category Overview
-                        st.markdown("### 📊 Executive Compliance Matrix (IFC Walls)")
-                        matrix_rows = []
-                        for group_name, items in grouped_walls.items():
-                            sample = items[0]
-                            mats_str = ", ".join(sample["Materials"]) if sample["Materials"] else "None"
-                            sample_gids = ", ".join([x["GlobalId"] for x in items[:2]])
-                            if len(items) > 2:
-                                sample_gids += f" (+{len(items)-2} more)"
-
-                            matrix_rows.append({
-                                "Wall Category / Type": group_name,
-                                "Element Count": len(items),
-                                "Sample GlobalIDs": sample_gids,
-                                "Thickness (mm)": sample["Width"],
-                                "Cavity Width (mm)": sample["CavityWidth"],
-                                "Is External": sample["IsExternal"],
-                                "Assigned Materials": mats_str
-                            })
-
-                        df_matrix = pd.DataFrame(matrix_rows)
-                        st.dataframe(df_matrix, use_container_width=True)
-
-                        # System Instruction Mandating Explicit Contract Verification
                         system_instruction = (
                             "You are a Senior Structural and BIM Compliance Auditor. "
-                            "Your core objective is to cross-examine extracted IFC wall geometry against the provided Contract Specification PDF. "
-                            "For every finding, you MUST cite the exact requirement stated in the Contract PDF text, compare it directly to the IFC model values, "
-                            "and explicitly report numerical discrepancies, missing materials, or non-compliant dimensions."
+                            "Your job is to cross-examine extracted IFC wall geometry against the provided Contract Specification PDF. "
+                            "You must generate an Executive Compliance Matrix table formatted like a laboratory test report, "
+                            "comparing actual IFC model values directly against contract PDF requirements for every wall category."
                         )
 
                         gen_config = types.GenerateContentConfig(
@@ -232,15 +208,20 @@ with col2:
                             f"{targeted_spec_context}\n\n"
                             "--- EXTRACTED IFC MODEL WALL DATA ---\n"
                             f"{wall_summary_text}\n\n"
-                            "REQUIRED REPORT SECTIONS:\n"
-                            "1. 📄 CONTRACT SPECIFICATION REQUIREMENTS:\n"
-                            "   Explicitly list what wall dimensions, thickness limits, cavity sizes, and material assemblies are required by the contract specification PDF.\n\n"
-                            "2. 🔍 GEOMETRIC & SPECIFICATION DISCREPANCIES:\n"
-                            "   Compare each IFC model wall category directly against the contract requirements. State the exact PDF requirement vs. actual IFC model value (e.g., PDF requires 300mm, IFC model has 1117.6mm).\n\n"
-                            "3. 🛠️ ACTIONABLE CORRECTION INSTRUCTIONS:\n"
-                            "   Provide clear instructions for the BIM Coordinator listing affected Global IDs and the exact modifications needed.\n\n"
-                            "4. 🏛️ FORMAL AUDIT VERDICT:\n"
-                            "   State the overall compliance outcome (APPROVED / REVISION REQUIRED) inside a Markdown blockquote card."
+                            "REQUIRED REPORT SECTIONS:\n\n"
+                            "1. 📊 EXECUTIVE COMPLIANCE MATRIX:\n"
+                            "   Generate a Markdown table formatted like a laboratory test report. It MUST have these exact columns:\n"
+                            "   | Wall Category / Type | Element Count | IFC Model Thickness | Contract Spec Required Thickness | IFC Model Materials | Contract Spec Required Materials | Compliance Status (PASS / FAIL / MISSING DATA) |\n"
+                            "   - For every category, evaluate the actual model value side-by-side with what the PDF contract specifies.\n"
+                            "   - If a spec value is not explicitly stated in the PDF text, write 'Not Specified in PDF'.\n\n"
+                            "2. 📄 CONTRACT SPECIFICATION REQUIREMENTS:\n"
+                            "   List the exact clauses, dimensions, R-values, threshold insulation, and material requirements extracted from the contract PDF.\n\n"
+                            "3. 🔍 GEOMETRIC & SPECIFICATION DISCREPANCIES:\n"
+                            "   Detail every non-compliance issue where IFC model values deviate from contract requirements.\n\n"
+                            "4. 🛠️ ACTIONABLE CORRECTION INSTRUCTIONS:\n"
+                            "   Provide explicit correction guidance for the BIM Coordinator with exact Global IDs.\n\n"
+                            "5. 🏛️ FORMAL AUDIT VERDICT:\n"
+                            "   State the overall result (APPROVED / REVISION REQUIRED) inside a Markdown blockquote card."
                         )
 
                         try:
@@ -256,7 +237,6 @@ with col2:
                                 config=gen_config,
                             )
 
-                        st.markdown("### 🤖 Detailed Wall Compliance Findings")
                         st.markdown(response.text)
 
                     except Exception as e:
