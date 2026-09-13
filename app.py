@@ -58,48 +58,39 @@ with col2:
     if run_audit:
         if not ifc_file or not pdf_file or not gemini_key:
             st.error(
-                "⚠️ Please provide all files and ensure the Gemini API Key is"
-                " available."
+                "⚠️ Please provide all files and ensure the Gemini API Key is available."
             )
         else:
-            # === STEP 1: TARGETED SEMANTIC TEXT RETRIEVAL ===
+            # === STEP 1: ROBUST CONTRACT SPECIFICATION EXTRACTION ===
             relevant_chunks = []
+            full_pdf_text = []
             with st.spinner("📄 Extracting technical contract clauses..."):
                 try:
                     reader = PdfReader(pdf_file)
                     search_terms = [
-                        search_keyword.lower(),
-                        "thickness",
-                        "width",
-                        "cavity",
-                        "insulation",
-                        "external",
-                        "structural",
-                        "cladding",
-                        "u-value",
-                        "party wall",
-                        "separating wall",
-                        "building regulations",
+                        search_keyword.lower(), "thickness", "width", "cavity",
+                        "insulation", "external", "structural", "cladding",
+                        "u-value", "party wall", "separating wall",
+                        "building regulations", "mm", "wall", "specification", "clause"
                     ]
+                    
                     for page_num, page in enumerate(reader.pages):
                         text = page.extract_text()
                         if text:
-                            for para in text.split("\n\n"):
-                                if any(
-                                    term in para.lower() for term in search_terms
-                                ) and len(para.strip()) > 30:
+                            full_pdf_text.append(f"--- Page {page_num + 1} ---\n{text}")
+                            for para in text.split("\n"):
+                                if any(term in para.lower() for term in search_terms) and len(para.strip()) > 15:
                                     relevant_chunks.append(
-                                        f"[Page {page_num + 1}]:"
-                                        f" {para.strip()}"
+                                        f"[Page {page_num + 1}]: {para.strip()}"
                                     )
                 except Exception as e:
                     st.error(f"Failed to process PDF text: {e}")
 
-            targeted_spec_context = (
-                "\n\n".join(relevant_chunks[:35])
-                if relevant_chunks
-                else "No explicitly matching spec clauses isolated."
-            )
+            # Fallback: If keyword search isolated too few lines, send raw text pages directly
+            if relevant_chunks and len(relevant_chunks) > 5:
+                targeted_spec_context = "\n".join(relevant_chunks[:45])
+            else:
+                targeted_spec_context = "\n\n".join(full_pdf_text[:15])
 
             # === STEP 2: BATCH IFC DATA EXTRACTION ===
             with tempfile.NamedTemporaryFile(
@@ -129,8 +120,7 @@ with col2:
 
                 # --- GRAPH-RAG BACKEND SYNCHRONIZATION ---
                 with st.spinner(
-                    "⛓️ Synchronizing All IFC Elements into Neo4j Knowledge"
-                    " Graph..."
+                    "⛓️ Synchronizing All IFC Elements into Neo4j Knowledge Graph..."
                 ):
                     try:
                         from ifc_to_neo4j import IFCGraphMapper
@@ -158,25 +148,23 @@ with col2:
                             f"⚠️ Neo4j Sync Bypassed: {g_err}"
                         )
 
-                # Group walls by Name and Type in Python to minimize token footprint
+                # Group walls by Name and Type in Python to optimize prompt space
                 grouped_walls = defaultdict(list)
                 for w in all_walls_data:
                     key = f"{w['Name']} ({w['Type']})"
                     grouped_walls[key].append(w)
 
                 wall_summary_text = ""
-                for idx, (group_name, items) in enumerate(
-                    grouped_walls.items(), 1
-                ):
+                for idx, (group_name, items) in enumerate(grouped_walls.items(), 1):
                     sample = items[0]
                     mats_str = (
                         ", ".join(sample["Materials"])
                         if sample["Materials"]
                         else "No associated materials populated"
                     )
-                    sample_gids = ", ".join([x["GlobalId"] for x in items[:3]])
-                    if len(items) > 3:
-                        sample_gids += f" (+{len(items)-3} more)"
+                    sample_gids = ", ".join([x["GlobalId"] for x in items[:2]])
+                    if len(items) > 2:
+                        sample_gids += f" (+{len(items)-2} more)"
 
                     wall_summary_text += (
                         f"CATEGORY #{idx}: {group_name}\n"
@@ -194,7 +182,7 @@ with col2:
                 ):
                     st.text(targeted_spec_context)
 
-                # === STEP 4: HYBRID LLM BATCH AUDIT GENERATION (WALL SPECIALIZED) ===
+                # === STEP 4: HYBRID LLM BATCH AUDIT GENERATION ===
                 with st.spinner(
                     "🧠 AI Cross-Examining IFC Wall Properties Against Contract Specifications..."
                 ):
@@ -224,13 +212,12 @@ with col2:
                         df_matrix = pd.DataFrame(matrix_rows)
                         st.dataframe(df_matrix, use_container_width=True)
 
-                        # System Instruction for Active Dynamic Cross-Examination
+                        # System Instruction Mandating Explicit Contract Verification
                         system_instruction = (
-                            "You are a Senior Structural and BIM Compliance Auditor specializing in wall assemblies. "
-                            "Analyze the provided IFC wall data and evaluate every single category against the contract PDF clauses. "
-                            "Do not repeat the raw data. Perform dynamic engineering checks: compare numerical wall thicknesses, "
-                            "cavity dimensions, external vs. internal classification, and material layers against contract requirements. "
-                            "Highlight non-compliant walls clearly using bullet points."
+                            "You are a Senior Structural and BIM Compliance Auditor. "
+                            "Your core objective is to cross-examine extracted IFC wall geometry against the provided Contract Specification PDF. "
+                            "For every finding, you MUST cite the exact requirement stated in the Contract PDF text, compare it directly to the IFC model values, "
+                            "and explicitly report numerical discrepancies, missing materials, or non-compliant dimensions."
                         )
 
                         gen_config = types.GenerateContentConfig(
@@ -240,19 +227,20 @@ with col2:
                         )
 
                         prompt = (
-                            "Perform an active compliance audit on these BIM wall categories against the contract PDF spec clauses:\n\n"
-                            f"EXTRACTED IFC WALL DATA ({len(all_walls_data)} Total Wall Elements across {len(grouped_walls)} Categories):\n"
+                            "Execute a complete Model-versus-Contract Specification Compliance Audit:\n\n"
+                            "--- CONTRACT SPECIFICATION PDF TEXT ---\n"
+                            f"{targeted_spec_context}\n\n"
+                            "--- EXTRACTED IFC MODEL WALL DATA ---\n"
                             f"{wall_summary_text}\n\n"
-                            f"CONTRACT SPECIFICATION CLAUSES:\n{targeted_spec_context}\n\n"
-                            "REQUIRED AUDIT REPORT SECTIONS:\n"
-                            "1. 🔍 GEOMETRIC & MATERIAL DISCREPANCIES:\n"
-                            "   Identify specific wall categories where model thickness, cavity width, or material assignment fails to match the PDF spec requirements.\n\n"
-                            "2. 📄 SPECIFICATION CLASHES & VIOLATIONS:\n"
-                            "   List explicit contract violations (e.g., external wall missing required cavity thickness, wrong stud size, unassigned materials).\n\n"
-                            "3. 🛠️ RESTRUCTURING & CORRECTION INSTRUCTIONS:\n"
-                            "   Provide actionable instructions for the BIM Coordinator listing exact Global IDs and required model changes.\n\n"
+                            "REQUIRED REPORT SECTIONS:\n"
+                            "1. 📄 CONTRACT SPECIFICATION REQUIREMENTS:\n"
+                            "   Explicitly list what wall dimensions, thickness limits, cavity sizes, and material assemblies are required by the contract specification PDF.\n\n"
+                            "2. 🔍 GEOMETRIC & SPECIFICATION DISCREPANCIES:\n"
+                            "   Compare each IFC model wall category directly against the contract requirements. State the exact PDF requirement vs. actual IFC model value (e.g., PDF requires 300mm, IFC model has 1117.6mm).\n\n"
+                            "3. 🛠️ ACTIONABLE CORRECTION INSTRUCTIONS:\n"
+                            "   Provide clear instructions for the BIM Coordinator listing affected Global IDs and the exact modifications needed.\n\n"
                             "4. 🏛️ FORMAL AUDIT VERDICT:\n"
-                            "   Provide the final approval state (APPROVED / REVISION REQUIRED) inside a blockquote card."
+                            "   State the overall compliance outcome (APPROVED / REVISION REQUIRED) inside a Markdown blockquote card."
                         )
 
                         try:
@@ -277,5 +265,5 @@ with col2:
                         )
             else:
                 st.warning(
-                    f"⚠️ No elements found matching component type '{search_keyword}' in the uploaded IFC file."
+                    f"⚠️ No elements matching '{search_keyword}' were found in the uploaded IFC file."
                 )
