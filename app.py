@@ -1,5 +1,6 @@
 import os
 import tempfile
+import pandas as pd
 from collections import defaultdict
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from google import genai
@@ -193,20 +194,43 @@ with col2:
                 ):
                     st.text(targeted_spec_context)
 
-                # === STEP 4: HYBRID LLM BATCH AUDIT GENERATION ===
+                # === STEP 4: HYBRID LLM BATCH AUDIT GENERATION (WALL SPECIALIZED) ===
                 with st.spinner(
-                    "🧠 Frontier AI Evaluating Summarized Categories Against PDF"
-                    " Specification..."
+                    "🧠 AI Cross-Examining IFC Wall Properties Against Contract Specifications..."
                 ):
                     try:
                         client = genai.Client(api_key=gemini_key)
 
+                        # Render Native Interactive Dataframe for Wall Category Overview
+                        st.markdown("### 📊 Executive Compliance Matrix (IFC Walls)")
+                        matrix_rows = []
+                        for group_name, items in grouped_walls.items():
+                            sample = items[0]
+                            mats_str = ", ".join(sample["Materials"]) if sample["Materials"] else "None"
+                            sample_gids = ", ".join([x["GlobalId"] for x in items[:2]])
+                            if len(items) > 2:
+                                sample_gids += f" (+{len(items)-2} more)"
+
+                            matrix_rows.append({
+                                "Wall Category / Type": group_name,
+                                "Element Count": len(items),
+                                "Sample GlobalIDs": sample_gids,
+                                "Thickness (mm)": sample["Width"],
+                                "Cavity Width (mm)": sample["CavityWidth"],
+                                "Is External": sample["IsExternal"],
+                                "Assigned Materials": mats_str
+                            })
+
+                        df_matrix = pd.DataFrame(matrix_rows)
+                        st.dataframe(df_matrix, use_container_width=True)
+
+                        # System Instruction for Active Dynamic Cross-Examination
                         system_instruction = (
-                            "You are a Lead Structural and BIM Compliance"
-                            " Auditor. CRITICAL RULE: Keep all responses"
-                            " concise and structured using bullet points. Table"
-                            " cells must remain under 10 words. Ensure all 5"
-                            " sections finish cleanly."
+                            "You are a Senior Structural and BIM Compliance Auditor specializing in wall assemblies. "
+                            "Analyze the provided IFC wall data and evaluate every single category against the contract PDF clauses. "
+                            "Do not repeat the raw data. Perform dynamic engineering checks: compare numerical wall thicknesses, "
+                            "cavity dimensions, external vs. internal classification, and material layers against contract requirements. "
+                            "Highlight non-compliant walls clearly using bullet points."
                         )
 
                         gen_config = types.GenerateContentConfig(
@@ -216,41 +240,19 @@ with col2:
                         )
 
                         prompt = (
-                            "Cross-examine the following BIM wall categories"
-                            " against the contract PDF specifications:\n\n"
-                            "PRE-GROUPED BIM WALL DATA"
-                            f" ({len(all_walls_data)} Total Elements across"
-                            f" {len(grouped_walls)} Categories):\n"
+                            "Perform an active compliance audit on these BIM wall categories against the contract PDF spec clauses:\n\n"
+                            f"EXTRACTED IFC WALL DATA ({len(all_walls_data)} Total Wall Elements across {len(grouped_walls)} Categories):\n"
                             f"{wall_summary_text}\n\n"
-                            "CONTRACT SPECIFICATION"
-                            f" CLAUSES:\n{targeted_spec_context}\n\n"
-                            "CRITICAL REQUIREMENT: Keep all section analyses"
-                            " bulleted and direct to ensure complete report"
-                            " generation without cutting off.\n\n"
-                            "REPORT SECTIONS REQUIRED:\n"
-                            "1. 📊 EXECUTIVE COMPLIANCE MATRIX:\n"
-                            "   Render a clean Markdown table: | Category |"
-                            " Count | Sample ID | Model Width | Spec Target |"
-                            " Status |.\n"
-                            "   (Keep descriptions under 10 words per"
-                            " cell).\n\n"
-                            "2. 🔍 GEOMETRIC & KNOWLEDGE GRAPH ANALYSIS:\n"
-                            "   Provide a short 3-4 bullet point summary of"
-                            " major model discrepancies (e.g., misclassified"
-                            " plumbing fixtures, missing material names).\n\n"
-                            "3. 📄 SPECIFICATION CLASH:\n"
-                            "   Provide 3-4 key bullet points detailing direct"
-                            " contract violations (e.g., Rainscreen vs."
-                            " Masonry cavity clash, stud thickness"
-                            " deviations).\n\n"
-                            "4. 🛠️ ACTIONABLE BIM MODIFICATION ORDER:\n"
-                            "   Provide bulleted instructions for the Revit"
-                            " Coordinator grouped by key Global IDs/Categories"
-                            " to resolve all flags.\n\n"
-                            "5. FORMAL ENGINEERING VERDICT:\n"
-                            "   Conclude with a final verdict blockquote card"
-                            " (e.g., > ### 🔴 VERDICT: CRITICAL NON-COMPLIANCE -"
-                            " REVISION REQUIRED)."
+                            f"CONTRACT SPECIFICATION CLAUSES:\n{targeted_spec_context}\n\n"
+                            "REQUIRED AUDIT REPORT SECTIONS:\n"
+                            "1. 🔍 GEOMETRIC & MATERIAL DISCREPANCIES:\n"
+                            "   Identify specific wall categories where model thickness, cavity width, or material assignment fails to match the PDF spec requirements.\n\n"
+                            "2. 📄 SPECIFICATION CLASHES & VIOLATIONS:\n"
+                            "   List explicit contract violations (e.g., external wall missing required cavity thickness, wrong stud size, unassigned materials).\n\n"
+                            "3. 🛠️ RESTRUCTURING & CORRECTION INSTRUCTIONS:\n"
+                            "   Provide actionable instructions for the BIM Coordinator listing exact Global IDs and required model changes.\n\n"
+                            "4. 🏛️ FORMAL AUDIT VERDICT:\n"
+                            "   Provide the final approval state (APPROVED / REVISION REQUIRED) inside a blockquote card."
                         )
 
                         try:
@@ -266,16 +268,14 @@ with col2:
                                 config=gen_config,
                             )
 
-                        st.markdown("### 🤖 Complete Project Batch Compliance Report")
+                        st.markdown("### 🤖 Detailed Wall Compliance Findings")
                         st.markdown(response.text)
 
                     except Exception as e:
                         st.error(
-                            "❌ Hybrid AI Analysis Failed. Check API Key. Error:"
-                            f" {e}"
+                            f"❌ Hybrid AI Analysis Failed. Check API Key. Error: {e}"
                         )
             else:
-                st.error(
-                    "Could not find any 3D components matching the term"
-                    f" '{search_keyword}' inside your uploaded IFC model file."
+                st.warning(
+                    f"⚠️ No elements found matching component type '{search_keyword}' in the uploaded IFC file."
                 )
