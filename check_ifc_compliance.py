@@ -38,38 +38,34 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
 
     all_matched_elements = []
 
-    # IFC classes that are routinely NAMED after the thing they're mounted on
-    # or adjacent to (e.g. "Wall Lamp", "Toilet-Commercial-Wall-3D",
-    # "Railing:Pipe-Wall Mount", "Door-Curtain-Wall-Double-Storefront").
-    # A name-only match on a generic keyword like "Wall" pulls these in even
-    # though they are fixtures/openings, not structural wall elements. We
-    # still trust a match on the IFC *class* itself (e.g. IfcCurtainWall),
-    # since that's an unambiguous structural signal - this list only blocks
-    # the name-substring path for classes that are known false-positive
-    # sources.
-    NON_STRUCTURAL_EXCLUDE_TYPES = {
-        "IfcDoor", "IfcWindow",
-        "IfcFurnishingElement", "IfcFurniture",
-        "IfcFlowTerminal", "IfcSanitaryTerminal",
-        "IfcRailing", "IfcLightFixture",
-        "IfcProxy", "IfcBuildingElementProxy",
+    # Strict IFC type selection avoids including fixtures named "wall-mounted".
+    # A model component is an entity because of its IFC class, NOT a name token.
+    kind = (search_keyword or "Wall").strip().casefold()
+    allowed = {
+        "wall": ("IfcWall", "IfcCurtainWall"),
+        "column": ("IfcColumn",),
+        "beam": ("IfcBeam",),
+        "slab": ("IfcSlab",),
+        "door": ("IfcDoor",),
+        "window": ("IfcWindow",),
+        "roof": ("IfcRoof",),
     }
-
-    # Gather ALL candidate elements (IfcWall, IfcWallStandardCase, IfcCurtainWall, etc.)
-    for element in ifc_file.by_type("IfcProduct"):
-        if element.is_a("IfcOpeningElement") or element.is_a("IfcOpening"):
-            continue
-
-        el_type = element.is_a()
-        el_name = str(getattr(element, "Name", ""))
-
-        type_match = search_keyword.lower() in el_type.lower()
-        name_match = search_keyword.lower() in el_name.lower()
-
-        if type_match:
-            all_matched_elements.append(element)
-        elif name_match and el_type not in NON_STRUCTURAL_EXCLUDE_TYPES:
-            all_matched_elements.append(element)
+    if kind in allowed:
+        all_matched_elements = [
+            element for element in ifc_file.by_type("IfcProduct")
+            if any(element.is_a(ifc_class) for ifc_class in allowed[kind])
+        ]
+    else:
+        # A custom search must name a real IFC class, e.g. IfcMember.
+        requested_class = search_keyword.strip()
+        if not requested_class.startswith("Ifc"):
+            raise ValueError(
+                "Use Wall/Beam/Slab/Column/Door/Window/Roof or a full IFC class name such as IfcMember"
+            )
+        all_matched_elements = [
+            element for element in ifc_file.by_type("IfcProduct")
+            if element.is_a(requested_class)
+        ]
 
     if not all_matched_elements:
         return []
@@ -79,7 +75,7 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
     for target_element in all_matched_elements:
         data = {
             "Type": target_element.is_a(),
-            "Name": getattr(target_element, "Name", "Unknown"),
+            "Name": getattr(target_element, "Name", None) or "Unnamed Element",
             "GlobalId": target_element.GlobalId,
             "IsExternal": None,  # Unknown until explicitly identified from IFC data
             "Width": "Unknown",

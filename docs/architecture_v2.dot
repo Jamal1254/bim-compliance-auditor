@@ -1,0 +1,9 @@
+digraph Auditor {
+  graph [rankdir=LR, bgcolor="white", nodesep=.35, ranksep=.5, fontname="Arial", fontsize=12];
+  node [shape=box, style="rounded,filled", fontname="Arial", fontsize=11, fillcolor="#f6f8fa", color="#cad3dc"];
+  edge [color="#77838c"];
+  subgraph cluster_inputs { label="INPUTS"; IFC [label="3D IFC model"]; PDF [label="Contract PDF (unverified)"]; RULE [label="User-confirmed clause,\nscope & tolerance"]; }
+  subgraph cluster_process { label="MODULAR PROCESSING"; PARSE [label="IfcOpenShell\nunique GlobalIds, width, materials"]; PDFTEXT [label="pypdf\npage-referenced clause candidates"]; NEO [label="Neo4j (optional)\nretrieved model relations"]; ENGINE [label="Deterministic test engine\nper-GlobalId comparisons",fillcolor="#dcefff"]; LLM [label="Gemini (optional)\ncandidate clauses only",fillcolor="#fff0d8"]; }
+  subgraph cluster_output { label="OUTPUTS & NEXT RESEARCH STAGE"; MATRIX [label="Filterable element matrix\nseverity + evidence + CSV", fillcolor="#ddf4e5"]; REVIEW [label="Human ground truth\n25-30 diverse elements"]; METRICS [label="TP, FP, FN, TN\nprecision, recall, F1"]; }
+  IFC->PARSE; PDF->PDFTEXT; RULE->ENGINE; PARSE->ENGINE; ENGINE->MATRIX; PARSE->NEO [style=dashed]; NEO->LLM [style=dashed]; PDFTEXT->LLM [style=dashed]; MATRIX->REVIEW [style=dashed]; REVIEW->METRICS [style=dashed];
+}
