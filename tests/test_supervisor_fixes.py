@@ -98,3 +98,34 @@ def test_spec_context_preserves_pdf_page_numbers():
     buf = BytesIO(); w.write(buf)
     records, count = clause_candidates(buf.getvalue(), "Wall")
     assert records == [] and count == 0
+
+def test_target_one_global_id_only():
+    r = audit_elements([_wall("A", 350.04), _wall("B", 352.0)],
+                       AuditRule(thickness_mm=352, scope="global_id", global_id="A",
+                                 source="controlled test", test_mode=True))
+    assert r[0]["IssueCategory"] == "GEOMETRY_MISMATCH"
+    assert r[0]["ThicknessDifference_mm"] == -1.96
+    assert r[1]["IssueCategory"] == "NOT_APPLICABLE"
+
+def test_exact_global_id_requires_identifier():
+    try:
+        AuditRule(thickness_mm=352, scope="global_id", source="test")
+    except ValueError as exc:
+        assert "GlobalId" in str(exc)
+    else:
+        raise AssertionError("Missing GlobalId must be rejected")
+
+def test_nonwall_not_mislabeled_as_wall_compliance():
+    element = _wall("DOOR1", 352)
+    element["Type"] = "IfcDoor"
+    status = audit_elements([element], rule())[0]
+    assert status["IssueCategory"] == "NOT_APPLICABLE"
+
+def test_validation_sample_does_not_fabricate_ground_truth():
+    from validation_export import merge_validation_sample
+    sample = "GlobalId,Type,Model_Name\nA,IfcWall,Wall A\nB,IfcBeam,Beam B\n"
+    rows = merge_validation_sample(sample, audit_elements([_wall("A", 350.04)], None))
+    assert len(rows) == 2
+    assert rows[0]["ExtractedInRun"] == "YES"
+    assert rows[1]["ExtractedInRun"] == "NO"
+    assert rows[0]["ground_truth_mismatch"] == ""

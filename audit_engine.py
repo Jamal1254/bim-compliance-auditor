@@ -14,6 +14,7 @@ class AuditRule:
     tolerance_mm: float = 0.0
     scope: str = "external"  # external, all, name_contains
     name_contains: str = ""
+    global_id: str = ""
     required_materials: tuple[str, ...] = ()
     source: str = ""
     test_mode: bool = True
@@ -21,10 +22,12 @@ class AuditRule:
     def __post_init__(self):
         if self.thickness_mm <= 0 or self.tolerance_mm < 0:
             raise ValueError("Required thickness must be positive; tolerance cannot be negative.")
-        if self.scope not in {"external", "all", "name_contains"}:
+        if self.scope not in {"external", "all", "name_contains", "global_id"}:
             raise ValueError("Unsupported scope")
         if self.scope == "name_contains" and not self.name_contains.strip():
             raise ValueError("Enter a nonempty element name filter.")
+        if self.scope == "global_id" and not self.global_id.strip():
+            raise ValueError("Enter one complete GlobalId for the selected test")
         if not self.source.strip():
             raise ValueError("Provide an exact human-confirmed specification citation or test reference.")
         if not self.test_mode and self.scope == "all":
@@ -43,6 +46,9 @@ def numeric_width(element):
 
 
 def _scope(element, rule):
+    if rule.scope == "global_id":
+        matched = str(element.get("GlobalId") or "") == rule.global_id
+        return matched, "Different GlobalId" if not matched else ""
     if rule.scope == "all":
         return True, "All elements: controlled test only"
     if rule.scope == "name_contains":
@@ -83,6 +89,12 @@ def audit_elements(elements: Sequence[dict], rule: Optional[AuditRule]):
             "Explanation": "No verified applicable rule was supplied",
         }
         if rule is None:
+            rows.append(record)
+            continue
+        # Only actual wall entities can be evaluated with a wall-thickness rule.
+        if str(e.get("Type") or "") not in {"IfcWall", "IfcWallStandardCase"}:
+            record.update(IssueCategory="NOT_APPLICABLE",
+                          Explanation="Wall thickness rule not applicable to this IFC element type")
             rows.append(record)
             continue
         applies, reason = _scope(e, rule)

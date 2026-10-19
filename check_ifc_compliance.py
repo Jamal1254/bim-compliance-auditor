@@ -50,22 +50,24 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
         "window": ("IfcWindow",),
         "roof": ("IfcRoof",),
     }
-    if kind in allowed:
-        all_matched_elements = [
-            element for element in ifc_file.by_type("IfcProduct")
-            if any(element.is_a(ifc_class) for ifc_class in allowed[kind])
-        ]
-    else:
-        # A custom search must name a real IFC class, e.g. IfcMember.
-        requested_class = search_keyword.strip()
-        if not requested_class.startswith("Ifc"):
-            raise ValueError(
-                "Use Wall/Beam/Slab/Column/Door/Window/Roof or a full IFC class name such as IfcMember"
-            )
-        all_matched_elements = [
-            element for element in ifc_file.by_type("IfcProduct")
-            if element.is_a(requested_class)
-        ]
+    aliases = [x.strip().casefold() for x in (search_keyword or "Wall").split(",") if x.strip()]
+    if aliases == ["all sample types"]:
+        aliases = ["wall", "beam", "slab", "door", "window"]
+    if not aliases:
+        aliases = ["wall"]
+    classes = []
+    for alias in aliases:
+        if alias in allowed:
+            classes.extend(allowed[alias])
+        elif alias.startswith("ifc"):
+            classes.append(next(x.strip() for x in (search_keyword or "Wall").split(",") if x.strip().casefold() == alias))
+        else:
+            raise ValueError("Unknown IFC type: " + alias + ". Use Wall, Beam, Slab, Door, Window or an Ifc class name")
+    classes = tuple(dict.fromkeys(classes))
+    all_matched_elements = [
+        element for element in ifc_file.by_type("IfcProduct")
+        if any(element.is_a(cls) for cls in classes)
+    ]
 
     if not all_matched_elements:
         return []
@@ -316,6 +318,8 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                 " thickness; verify source property/geometry)"
             )
 
+        if target_element.is_a() not in {"IfcWall", "IfcWallStandardCase"}:
+            data["WidthSource"] = "UNVERIFIED NON-WALL DIMENSION: " + str(data["WidthSource"])
         extracted_walls_data.append(data)
 
     return extracted_walls_data

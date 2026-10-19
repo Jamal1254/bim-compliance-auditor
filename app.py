@@ -17,9 +17,10 @@ from audit_engine import AuditRule, audit_elements, categories_summary, issue_co
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from spec_context import clause_candidates, candidates_text
 from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses
+from validation_export import merge_validation_sample, validation_csv
 
-APP_VERSION = "Supervisor Revision v2.0"
-st.set_page_config(page_title="BIM Compliance Auditor — v2", page_icon="🏗️", layout="wide")
+APP_VERSION = "Supervisor Revision v3.0"
+st.set_page_config(page_title="BIM Compliance Auditor — v3", page_icon="🏗️", layout="wide")
 st.title("🏗️ BIM Model ↔ Specification Evidence Auditor")
 st.caption(f"{APP_VERSION} • Separate IFC observations, unverified PDF evidence and reproducible rule tests")
 st.warning(
@@ -69,8 +70,8 @@ def _display_rows(rows):
     table = pd.DataFrame(rows)
     categories = sorted(table["IssueCategory"].dropna().unique().tolist())
     selected = st.multiselect("Filter by issue category", categories, default=categories)
-    filtered = table[table["IssueCategory"].isin(selected)]
-    st.caption("One row per IFC GlobalId. Coloured labels indicate checking priority, not structural hazard severity.")
+    filtered = table if not selected else table[table["IssueCategory"].isin(selected)]
+    st.caption("One row per IFC GlobalId. No category selected = show all. Colours indicate checking priority, not structural hazard severity.")
     show_columns = ["GlobalId", "ElementName", "IFCType", "ObservedThickness_mm", "ThicknessSource",
                     "RequiredThickness_mm", "ThicknessDifference_mm", "IssueCategory", "EvidenceReference", "Explanation"]
     st.dataframe(
@@ -90,7 +91,8 @@ with st.sidebar:
     st.header("⚙️ Test configuration")
     ifc_upload = st.file_uploader("IFC model", type=["ifc"])
     spec_upload = st.file_uploader("Technical specification PDF", type=["pdf"])
-    keyword = st.text_input("IFC component type", value="Wall")
+    keyword = st.text_input("IFC component type(s)", value="Wall",
+                            help="Use Wall, Beam, Slab, Door, Window, or All sample types to collect 30-element sample evidence.")
     st.subheader("1. Evaluation mode")
     mode = st.radio("Mode", ["Evidence extraction only", "Controlled synthetic test", "Verified contractual rule"],
                     help="Synthetic tests cannot establish actual construction compliance.")
@@ -99,20 +101,24 @@ with st.sidebar:
     tolerance = 0.0
     scope = "external"
     substring = ""
+    rule_global_id = ""
     material_terms = ""
     reference = ""
     applicability_confirmed = False
     if verified_rule:
         required = st.number_input("Required thickness (mm)", min_value=0.01, value=352.0, step=0.1)
         tolerance = st.number_input("Allowed tolerance ±mm", min_value=0.0, value=0.0, step=0.1)
-        choices = ["External flag=True", "Element name contains..."]
+        choices = ["External flag=True", "Element name contains...", "One exact GlobalId"]
         if mode == "Controlled synthetic test":
             choices.append("ALL extracted elements (synthetic only)")
         scope_name = st.selectbox("Rule applies to", choices)
         scope = {"External flag=True": "external", "Element name contains...": "name_contains",
+                 "One exact GlobalId": "global_id",
                  "ALL extracted elements (synthetic only)": "all"}[scope_name]
         if scope == "name_contains":
             substring = st.text_input("Name includes", value="")
+        if scope == "global_id":
+            rule_global_id = st.text_input("Exact IFC GlobalId", value="", help="Target only one deliberately altered wall")
         material_terms = st.text_input("Required material keywords (optional)", value="",
                                        help="Comma-separated tokens. Plain text match only; not semantic material verification.")
         reference = st.text_input("Exact clause / test reference",
@@ -151,7 +157,7 @@ if run:
             if verified_rule:
                 rule = AuditRule(
                     thickness_mm=float(required), tolerance_mm=float(tolerance),
-                    scope=scope, name_contains=substring,
+                    scope=scope, name_contains=substring, global_id=rule_global_id,
                     required_materials=tuple(x.strip() for x in material_terms.split(",") if x.strip()),
                     source=reference.strip(), test_mode=mode == "Controlled synthetic test"
                 )
@@ -188,8 +194,9 @@ if run:
                     "rows": rows, "elements": elements, "candidates": candidates,
                     "total_candidates": total_candidates, "graph": graph,
                     "graph_error": graph_error, "llm_output": llm_output,
-                    "prompt_hash": prompt_hash, "llm_model": llm_model,
-                    "llm_variant": llm_variant, "mode": mode,
+                    "prompt_hash": prompt_hash, "llm_model": llm_model if use_llm else None,
+                    "llm_variant": llm_variant if use_llm else None, "mode": mode,
+                    "gemini_enabled": use_llm, "neo4j_enabled": with_graph,
                     "IFC_SHA256": hashlib.sha256(ifc_bytes).hexdigest(),
                     "PDF_SHA256": hashlib.sha256(pdf_bytes).hexdigest(),
                     "audit_input_signature": (ifc_upload.name, spec_upload.name, keyword),
@@ -211,6 +218,8 @@ if report:
     k3.metric("Discrepancies (if rule applies)", sum(summary.get(c, 0) for c in
               ("GEOMETRY_MISMATCH", "MATERIAL_MISMATCH", "MISMATCH_BOTH")))
     k4.metric("Not assessed / out of scope", summary.get("NOT_ASSESSABLE", 0) + summary.get("NOT_APPLICABLE", 0) + summary.get("SCOPE_UNVERIFIED", 0))
+    if any(x.get("IFCType") not in {"IfcWall", "IfcWallStandardCase", "IfcCurtainWall"} for x in report["rows"]):
+        st.info("Non-wall dimensions are EXPLORATORY. Beam/slab/door/window width needs class-specific measurement definitions and is not verified thickness compliance.")
     if report["mode"] == "Evidence extraction only":
         st.info("No numerical compliance decision was made. All rows are NOT ASSESSABLE until an independently confirmed rule is provided.")
     elif report["mode"] == "Controlled synthetic test":
@@ -219,6 +228,19 @@ if report:
         st.warning("Verified-rule check only. This is not a comprehensive contract or structural safety approval.")
     st.write("**Category counts:**", summary)
     _display_rows(report["rows"])
+
+    sample_path = Path(__file__).parent / "validation" / "sample_30_elements.csv"
+    if sample_path.exists():
+        sample_enriched = merge_validation_sample(sample_path.read_bytes(), report["rows"])
+        matched_sample = sum(x["ExtractedInRun"] == "YES" for x in sample_enriched)
+        st.subheader("🧪 Supervisor validation sample — 30 elements")
+        st.write(f"Evidence found for **{matched_sample} / {len(sample_enriched)}** selected GlobalIds in this run.")
+        st.caption("Ground truth is deliberately blank. Independently verify contract scope, clause and actual requirement before assigning labels.")
+        st.download_button("⬇️ Download 30-element evidence & ground-truth worksheet (CSV)",
+                           validation_csv(sample_enriched).encode("utf-8-sig"),
+                           "validation_30_ground_truth_to_complete.csv", "text/csv")
+        if matched_sample < len(sample_enriched):
+            st.info("Select 'All sample types' and rerun Evidence extraction only to collect all sample element classes.")
 
     with st.expander(f"📄 PDF candidate clauses ({report['total_candidates']} keyword hits; {len(report['candidates'])} selected)"):
         st.caption("Candidate evidence only. PDF page numbers include the cover page. Verify clause applicability manually.")
@@ -234,7 +256,7 @@ if report:
         st.text(report["llm_output"])
     st.download_button(
         "⬇️ Download research run metadata (JSON)",
-        json.dumps({k: report[k] for k in ("mode", "IFC_SHA256", "PDF_SHA256", "prompt_hash", "llm_model", "llm_variant")}, indent=2),
+        json.dumps({k: report[k] for k in ("mode", "IFC_SHA256", "PDF_SHA256", "prompt_hash", "llm_model", "llm_variant", "gemini_enabled", "neo4j_enabled")}, indent=2),
         "audit_run_metadata.json", "application/json"
     )
     st.caption("No overall APPROVED / REVISION REQUIRED verdict is produced automatically. Independent ground-truth validation remains necessary.")
