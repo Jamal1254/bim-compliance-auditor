@@ -1,143 +1,105 @@
-import ifcopenshell
+"""Project-isolated IFC evidence graph. No shared-account credentials or global delete.
+
+The graph contains *observed* evidence, not automatically verified contractual
+requirements. Each project is keyed by file SHA-256 to avoid cross-file leakage.
+"""
+import hashlib
+import os
 from neo4j import GraphDatabase
-import streamlit as st
+
+
+def _setting(name):
+    value = os.environ.get(name)
+    if value:
+        return value
+    try:
+        import streamlit as st
+        return str(st.secrets.get(name, "") or "")
+    except Exception:
+        return ""
+
 
 class IFCGraphMapper:
     def __init__(self):
-        # Updated defaults matching your instance credentials file
-        uri = st.secrets.get("NEO4J_URI", "neo4j+s://cf515c86.databases.neo4j.io")
-        username = st.secrets.get("NEO4J_USERNAME", "cf515c86")
-        password = st.secrets.get("NEO4J_PASSWORD", "")
-        if not password:
-            raise RuntimeError("NEO4J_PASSWORD secret is required; hardcoded passwords are not supported")
-        self.database = st.secrets.get("NEO4J_DATABASE", "cf515c86")
-        
+        uri = _setting("NEO4J_URI")
+        username = _setting("NEO4J_USERNAME")
+        password = _setting("NEO4J_PASSWORD")
+        self.database = _setting("NEO4J_DATABASE") or "neo4j"
+        if not all((uri, username, password)):
+            raise RuntimeError("Provide NEO4J_URI, NEO4J_USERNAME and NEO4J_PASSWORD in Streamlit Secrets")
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
     def close(self):
         self.driver.close()
 
     def setup_constraints(self):
-        """Creates database uniqueness constraints and indexes to prevent performance bottlenecks."""
-        with self.driver.session(database=self.database) as session:
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:BIMElement) REQUIRE e.globalId IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:BuildingStorey) REQUIRE s.globalId IS UNIQUE")
-            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Material) ON (m.name)")
+        with self.driver.session(database=self.database) as s:
+            s.run("CREATE CONSTRAINT audit_element_v4_key IF NOT EXISTS FOR (e:AuditElementV4) REQUIRE e.key IS UNIQUE").consume()
+            s.run("CREATE CONSTRAINT audit_model_v4_sha IF NOT EXISTS FOR (m:AuditModelV4) REQUIRE m.sha256 IS UNIQUE").consume()
+            s.run("CREATE CONSTRAINT audit_storey_v4_key IF NOT EXISTS FOR (s:AuditStoreyV4) REQUIRE s.key IS UNIQUE").consume()
+            s.run("CREATE CONSTRAINT audit_material_v4_key IF NOT EXISTS FOR (m:AuditMaterialV4) REQUIRE m.key IS UNIQUE").consume()
 
-    def clear_database(self):
-        """Clears existing nodes to ensure a fresh, project-specific audit graph."""
-        with self.driver.session(database=self.database) as session:
-            session.run("MATCH (n) DETACH DELETE n")
-
-    def upload_ifc_to_graph(self, ifc_filepath):
-        """Parses the IFC model and maps core architectural entities and relationships."""
+    def upload_elements(self, model_hash, elements):
+        """Upsert only uploaded project's selected elements, in batches."""
+        if not model_hash or len(model_hash) != 64:
+            raise ValueError("Model SHA-256 required")
         self.setup_constraints()
-        ifc_model = ifcopenshell.open(ifc_filepath)
-        
-        with self.driver.session(database=self.database) as session:
-            # 1. Map Spatial Hierarchies (Storeys/Levels)
-            storeys = ifc_model.by_type("IfcBuildingStorey")
-            for storey in storeys:
-                session.run(
-                    "MERGE (s:BuildingStorey {globalId: $gid}) "
-                    "SET s.name = $name",
-                    gid=storey.GlobalId, 
-                    name=storey.Name or "Unnamed Level"
-                )
-
-            # 2. Map Structural Components
-            products = ifc_model.by_type("IfcProduct")
-            for product in products:
-                if product.is_a("IfcSpatialStructureElement"):
-                    continue
-                
-                width = None
-                is_external = False
-                
-                for definition in getattr(product, "IsDefinedBy", []):
-                    if definition.is_a("IfcRelDefinesByProperties"):
-                        property_set = getattr(definition, "RelatingPropertyDefinition", None)
-                        if property_set and property_set.is_a("IfcPropertySet"):
-                            pset_name = property_set.Name or ""
-                            if "Common" in pset_name or "Dimensions" in pset_name:
-                                for prop in getattr(property_set, "HasProperties", []):
-                                    prop_name = getattr(prop, "Name", "")
-                                    nom_val = getattr(prop, "NominalValue", None)
-                                    
-                                    if ("Width" in prop_name or "Thickness" in prop_name) and nom_val:
-                                        try:
-                                            width = float(nom_val.wrappedValue)
-                                        except (ValueError, TypeError):
-                                            width = str(nom_val.wrappedValue)
-                                            
-                                    if "External" in prop_name and nom_val:
-                                        raw_val = nom_val.wrappedValue
-                                        is_external = bool(raw_val) if isinstance(raw_val, (bool, int)) else str(raw_val).lower() == "true"
-
-                session.run(
-                    "MERGE (e:BIMElement {globalId: $gid}) "
-                    "SET e.name = $name, e.type = $type, e.width = $width, e.isExternal = $is_external",
-                    gid=product.GlobalId, 
-                    name=product.Name or "Unnamed Element", 
-                    type=product.is_a(),
-                    width=width if width is not None else "Unknown", 
-                    is_external=is_external
-                )
-
-                # 3. Establish Spatial Containment Relationships (CONTAINED_IN)
-                for relation in getattr(product, "ContainedInStructure", []):
-                    storey_id = relation.RelatingStructure.GlobalId
-                    session.run(
-                        "MATCH (e:BIMElement {globalId: $element_id}), (s:BuildingStorey {globalId: $storey_id}) "
-                        "MERGE (e)-[:CONTAINED_IN]->(s)",
-                        element_id=product.GlobalId, 
-                        storey_id=storey_id
+        items = []
+        for e in elements:
+            gid = str(e.get("GlobalId") or "")
+            if not gid:
+                continue
+            materials = sorted(set(str(m) for m in e.get("Materials", []) if m))
+            items.append({
+                "key": f"{model_hash}:{gid}", "gid": gid,
+                "name": str(e.get("Name") or ""), "ifcType": str(e.get("Type") or ""),
+                "storey": str(e.get("Storey") or "Unknown"),
+                "isExternal": e.get("IsExternal") if isinstance(e.get("IsExternal"), bool) else None,
+                "widthMm": e.get("Width") if isinstance(e.get("Width"), (int, float)) else None,
+                "widthSource": str(e.get("WidthSource") or ""),
+                "materials": [{"key": f"{model_hash}:material:{hashlib.sha256(m.encode()).hexdigest()}", "name": m} for m in materials]
+            })
+        with self.driver.session(database=self.database) as s:
+            for i in range(0, len(items), 150):
+                batch = items[i:i+150]
+                s.run("""
+                    MERGE (model:AuditModelV4 {sha256:$hash})
+                    WITH model
+                    UNWIND $rows AS row
+                    MERGE (e:AuditElementV4 {key:row.key})
+                    SET e.globalId=row.gid,e.modelHash=$hash,e.name=row.name,
+                        e.type=row.ifcType,e.widthMm=row.widthMm,
+                        e.widthSource=row.widthSource,e.isExternal=row.isExternal
+                    MERGE (e)-[:IN_MODEL]->(model)
+                    FOREACH (_ IN CASE WHEN row.storey='Unknown' THEN [] ELSE [1] END |
+                        MERGE (st:AuditStoreyV4 {key:$hash + ':storey:' + row.storey})
+                        SET st.name=row.storey,st.modelHash=$hash
+                        MERGE (e)-[:CONTAINED_IN]->(st)
                     )
+                """, hash=model_hash, rows=batch).consume()
+                s.run("""
+                    UNWIND $rows AS row
+                    MATCH (e:AuditElementV4 {key:row.key})
+                    UNWIND row.materials AS mat
+                    MERGE (m:AuditMaterialV4 {key:mat.key})
+                    SET m.name=mat.name,m.modelHash=$hash
+                    MERGE (e)-[:HAS_MATERIAL]->(m)
+                """, rows=batch, hash=model_hash).consume()
+        return len(items)
 
-                # 4. Establish Material Association Relationships (HAS_MATERIAL)
-                for assoc in getattr(product, "HasAssociations", []):
-                    if assoc.is_a("IfcRelAssociatesMaterial"):
-                        material_select = assoc.RelatingMaterial
-                        material_name = "Unknown Material"
-                        
-                        if material_select.is_a("IfcMaterial"):
-                            material_name = material_select.Name or material_name
-                        elif material_select.is_a("IfcMaterialLayerSetUsage"):
-                            if material_select.ForLayerSet and material_select.ForLayerSet.LayerSetName:
-                                material_name = material_select.ForLayerSet.LayerSetName
-                        elif material_select.is_a("IfcMaterialList"):
-                            m_names = [m.Name for m in getattr(material_select, "Materials", []) if getattr(m, "Name", None)]
-                            if m_names:
-                                material_name = ", ".join(m_names)
-                        
-                        session.run(
-                            "MATCH (e:BIMElement {globalId: $element_id}) "
-                            "MERGE (m:Material {name: $mat_name}) "
-                            "MERGE (e)-[:HAS_MATERIAL]->(m)",
-                            element_id=product.GlobalId, 
-                            mat_name=material_name
-                        )
-
-        return True
-
-    def retrieve_element_neighborhood(self, global_ids, limit=500):
-        """Fetch actual Neo4j neighbours for selected IFC element GlobalIds.
-
-        Results are concrete graph evidence; not an LLM-generated description.
-        """
+    def retrieve_element_neighborhood(self, global_ids, model_hash, limit=150):
         if not global_ids:
             return []
-        query = """
-        MATCH (e:BIMElement)
-        WHERE e.globalId IN $ids
-        OPTIONAL MATCH (e)-[:CONTAINED_IN]->(s:BuildingStorey)
-        OPTIONAL MATCH (e)-[:HAS_MATERIAL]->(m:Material)
-        RETURN e.globalId AS globalId, e.name AS name, e.type AS type,
-               e.isExternal AS graphExternal,
-               collect(DISTINCT s.name) AS storeys,
-               collect(DISTINCT m.name) AS materials
-        ORDER BY globalId
-        LIMIT $limit
-        """
-        with self.driver.session(database=self.database) as session:
-            return [dict(rec) for rec in session.run(query, ids=list(global_ids), limit=int(limit))]
+        with self.driver.session(database=self.database) as s:
+            return [dict(x) for x in s.run("""
+                MATCH (e:AuditElementV4 {modelHash:$hash})
+                WHERE e.globalId IN $ids
+                OPTIONAL MATCH (e)-[:CONTAINED_IN]->(st:AuditStoreyV4)
+                OPTIONAL MATCH (e)-[:HAS_MATERIAL]->(mat:AuditMaterialV4)
+                RETURN e.globalId AS globalId,e.name AS name,e.type AS type,
+                       e.widthMm AS observedWallThicknessMm,e.widthSource AS widthSource,
+                       e.isExternal AS isExternal,
+                       collect(DISTINCT st.name) AS storeys,
+                       collect(DISTINCT mat.name) AS materials
+                ORDER BY globalId LIMIT $limit
+            """,hash=model_hash,ids=list(global_ids),limit=int(limit))]

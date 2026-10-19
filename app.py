@@ -1,264 +1,253 @@
-"""BIM Compliance Auditor — supervisor review v2.
+"""BIM Evidence Auditor v4 — general IFC/PDF, cautious verified comparisons.
 
-Clear separation of IFC extraction, evidence discovery and user-confirmed
-numerical tests. The AI NEVER issues the engineering compliance verdict.
+This is research software. It NEVER certifies a construction or contract.
+Every rule requires a person to set applicable class, scope and citation.
 """
 import hashlib
 import io
 import json
 import os
 import tempfile
-from pathlib import Path
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
 
-from audit_engine import AuditRule, audit_elements, categories_summary, issue_colour, numeric_width
+from audit_engine import AuditRule, MEASUREMENT_TYPES, audit_elements, categories_summary, issue_colour
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from spec_context import clause_candidates, candidates_text
 from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses
-from validation_export import merge_validation_sample, validation_csv
+from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
+from validation import evaluate_records
 
-APP_VERSION = "Supervisor Revision v3.0"
-st.set_page_config(page_title="BIM Compliance Auditor — v3", page_icon="🏗️", layout="wide")
-st.title("🏗️ BIM Model ↔ Specification Evidence Auditor")
-st.caption(f"{APP_VERSION} • Separate IFC observations, unverified PDF evidence and reproducible rule tests")
-st.warning(
-    "Research prototype — no automatic construction approval. The uploaded IFC and specification "
-    "may concern different buildings. Unless you confirm scope and an exact clause, results remain NOT ASSESSABLE."
-)
+APP_VERSION = "Supervisor Revision v4.0 — General IFC/PDF"
+st.set_page_config(page_title="BIM Evidence Auditor v4", page_icon="🏗️", layout="wide")
+st.title("🏗️ BIM ↔ Technical Specification Evidence Auditor")
+st.caption(APP_VERSION)
+st.warning("Evidence-based research prototype. An IFC model and PDF may describe different projects. "
+           "Automatic document relevance is not proof of contractual applicability, and no overall safety or compliance certification is provided.")
 
 
-def read_secret(key):
+def secret(key):
     try:
-        return str(os.environ.get(key) or st.secrets.get(key, "") or "").strip()
+        return (os.environ.get(key) or str(st.secrets.get(key, "") or "")).strip()
     except Exception:
-        return str(os.environ.get(key, "") or "").strip()
+        return (os.environ.get(key) or "").strip()
 
 
-def _extract(file_bytes, keyword):
-    name = None
+def extract_file(data, query):
+    path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ifc") as f:
-            f.write(file_bytes)
-            name = f.name
-        return extract_all_ifc_wall_dimensions(name, keyword)
+            f.write(data)
+            path = f.name
+        return extract_all_ifc_wall_dimensions(path, query)
     finally:
-        if name and os.path.exists(name):
-            os.remove(name)
+        if path:
+            try: os.remove(path)
+            except OSError: pass
 
 
-def _graph_context(file_bytes, global_ids):
-    name = None
+def graph_lookup(model_hash, rows):
+    from ifc_to_neo4j import IFCGraphMapper
+    mapper = IFCGraphMapper()
     try:
-        from ifc_to_neo4j import IFCGraphMapper
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".ifc") as f:
-            f.write(file_bytes)
-            name = f.name
-        mapper = IFCGraphMapper()
-        try:
-            mapper.upload_ifc_to_graph(name)
-            return mapper.retrieve_element_neighborhood(global_ids[:150], limit=150)
-        finally:
-            mapper.close()
+        limited = rows[:300]  # honest partial graph cap for large IFC uploads
+        uploaded = mapper.upload_elements(model_hash, limited)
+        return mapper.retrieve_element_neighborhood([r["GlobalId"] for r in limited], model_hash, limit=150), uploaded
     finally:
-        if name and os.path.exists(name):
-            os.remove(name)
+        mapper.close()
 
 
-def _display_rows(rows):
-    table = pd.DataFrame(rows)
-    categories = sorted(table["IssueCategory"].dropna().unique().tolist())
-    selected = st.multiselect("Filter by issue category", categories, default=categories)
-    filtered = table if not selected else table[table["IssueCategory"].isin(selected)]
-    st.caption("One row per IFC GlobalId. No category selected = show all. Colours indicate checking priority, not structural hazard severity.")
-    show_columns = ["GlobalId", "ElementName", "IFCType", "ObservedThickness_mm", "ThicknessSource",
-                    "RequiredThickness_mm", "ThicknessDifference_mm", "IssueCategory", "EvidenceReference", "Explanation"]
-    st.dataframe(
-        filtered[show_columns].style.map(lambda val: f"background-color: {issue_colour(str(val))}", subset=["IssueCategory"]),
-        use_container_width=True, hide_index=True, height=min(700, max(220, len(filtered) * 35 + 75))
-    )
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button("⬇️ All element results (CSV)", table.to_csv(index=False).encode("utf-8-sig"),
-                           "element_evidence_audit_all.csv", "text/csv")
-    with c2:
-        st.download_button("⬇️ Filtered results (CSV)", filtered.to_csv(index=False).encode("utf-8-sig"),
-                           "element_evidence_audit_filtered.csv", "text/csv")
+def table_and_export(rows):
+    data = pd.DataFrame(rows)
+    if data.empty:
+        st.info("No elements extracted for the selected filter.")
+        return
+    categories = sorted(data["IssueCategory"].dropna().unique().tolist())
+    selected = st.multiselect("Filter by audit category", categories, default=categories)
+    visible = data[data["IssueCategory"].isin(selected)] if selected else data
+    cols = ["GlobalId", "ElementName", "IFCType", "Measurement", "MeasuredValue_mm", "MeasurementSource",
+            "RequiredThickness_mm", "ThicknessDifference_mm", "IssueCategory", "EvidenceReference", "Explanation"]
+    st.dataframe(visible[cols].style.map(lambda v: f"background-color: {issue_colour(str(v))}", subset=["IssueCategory"]),
+                 use_container_width=True, hide_index=True, height=420)
+    one, two = st.columns(2)
+    with one:
+        st.download_button("⬇️ All IFC evidence (CSV)", data.to_csv(index=False).encode("utf-8-sig"),
+                           "ifc_evidence_all.csv", "text/csv")
+    with two:
+        st.download_button("⬇️ Filtered IFC evidence (CSV)", visible.to_csv(index=False).encode("utf-8-sig"),
+                           "ifc_evidence_filtered.csv", "text/csv")
 
 
 with st.sidebar:
-    st.header("⚙️ Test configuration")
-    ifc_upload = st.file_uploader("IFC model", type=["ifc"])
-    spec_upload = st.file_uploader("Technical specification PDF", type=["pdf"])
-    keyword = st.text_input("IFC component type(s)", value="Wall",
-                            help="Use Wall, Beam, Slab, Door, Window, or All sample types to collect 30-element sample evidence.")
+    st.header("⚙️ Inputs and tests")
+    ifc_upload = st.file_uploader("Any IFC2x3/IFC4 model", type=["ifc"])
+    pdf_upload = st.file_uploader("Any searchable technical-specification PDF", type=["pdf"])
+    component = st.text_input("IFC elements to extract", value="All model elements",
+        help="All model elements, Wall, Beam, Slab, Column, Door, Window, Roof, or a comma-separated IFC class list e.g. IfcWall,IfcDoor")
+    st.caption("No sample IFC filename, GlobalId, country or building code is assumed.")
     st.subheader("1. Evaluation mode")
-    mode = st.radio("Mode", ["Evidence extraction only", "Controlled synthetic test", "Verified contractual rule"],
-                    help="Synthetic tests cannot establish actual construction compliance.")
-    verified_rule = mode != "Evidence extraction only"
-    required = 352.0
-    tolerance = 0.0
-    scope = "external"
-    substring = ""
-    rule_global_id = ""
-    material_terms = ""
-    reference = ""
-    applicability_confirmed = False
-    if verified_rule:
-        required = st.number_input("Required thickness (mm)", min_value=0.01, value=352.0, step=0.1)
-        tolerance = st.number_input("Allowed tolerance ±mm", min_value=0.0, value=0.0, step=0.1)
-        choices = ["External flag=True", "Element name contains...", "One exact GlobalId"]
+    mode = st.radio("Mode", ["Evidence extraction only", "Controlled synthetic test", "Verified contractual rule"])
+    rule = None
+    rule_error = ""
+    metric = "Wall thickness"
+    reference_text, tol_text, scope_name, scope_filter, gid, material_text, citation = "", "0", "One exact GlobalId", "", "", "", ""
+    confirmed = False
+    if mode != "Evidence extraction only":
+        metric = st.selectbox("Property to compare", list(MEASUREMENT_TYPES))
+        reference_text = st.text_input("Required value (mm) — enter YOUR value", placeholder="e.g., 250")
+        tol_text = st.text_input("Allowed tolerance ±mm (0 if none)", value="0")
+        options = ["One exact GlobalId", "Element name contains...", "External flag=True"]
         if mode == "Controlled synthetic test":
-            choices.append("ALL extracted elements (synthetic only)")
-        scope_name = st.selectbox("Rule applies to", choices)
-        scope = {"External flag=True": "external", "Element name contains...": "name_contains",
-                 "One exact GlobalId": "global_id",
-                 "ALL extracted elements (synthetic only)": "all"}[scope_name]
-        if scope == "name_contains":
-            substring = st.text_input("Name includes", value="")
-        if scope == "global_id":
-            rule_global_id = st.text_input("Exact IFC GlobalId", value="", help="Target only one deliberately altered wall")
-        material_terms = st.text_input("Required material keywords (optional)", value="",
-                                       help="Comma-separated tokens. Plain text match only; not semantic material verification.")
-        reference = st.text_input("Exact clause / test reference",
-                                  value="Controlled probe: 352 mm" if mode == "Controlled synthetic test" else "",
-                                  help="For verified rules cite the applicable specification and page number.")
+            options.append("ALL compatible elements (synthetic only)")
+        scope_name = st.selectbox("Confirmed rule scope", options)
+        if scope_name == "One exact GlobalId":
+            gid = st.text_input("Exact IFC GlobalId", placeholder="Paste a real GlobalId from your model")
+        elif scope_name == "Element name contains...":
+            scope_filter = st.text_input("Name contains")
+        material_text = st.text_input("Optional required material terms, comma separated", value="")
+        citation = st.text_input("Verified PDF page / clause OR synthetic test reference",
+                                 placeholder="Example: PDF page 15, clause 2.2")
         if mode == "Verified contractual rule":
-            applicability_confirmed = st.checkbox(
-                "I independently verified the contract applies to this model AND the clause applies to the selected element scope"
-            )
+            confirmed = st.checkbox("I independently checked the document belongs to this project AND this clause applies to these elements")
         else:
-            st.info("Controlled tests check software behaviour only — NOT contractual compliance.")
-    st.subheader("2. Optional tools")
-    with_graph = st.checkbox("Retrieve graph neighbours from Neo4j (slower)", value=False)
-    use_llm = st.checkbox("Use Gemini for candidate PDF clauses", value=False)
+            st.info("Synthetic threshold tests prove software behaviour only, not real contractual compliance.")
+    st.subheader("2. Optional modules")
+    with_graph = st.checkbox("Retrieve model-isolated Neo4j graph evidence", value=False)
+    use_llm = st.checkbox("Gemini — suggest PDF clauses (unverified)", value=False)
     llm_model = "gemini-2.5-flash"
-    llm_variant = list(PROMPT_VARIANTS)[0]
+    prompt_variant = next(iter(PROMPT_VARIANTS))
     if use_llm:
-        llm_model = st.selectbox("LLM model", ["gemini-2.5-flash", "gemini-2.0-flash"])
-        llm_variant = st.selectbox("Prompt variant", list(PROMPT_VARIANTS))
-        if not read_secret("GEMINI_API_KEY"):
-            st.error("Add GEMINI_API_KEY in Streamlit Secrets to use Gemini.")
-    run = st.button("🚀 Run evidence audit", type="primary", use_container_width=True)
+        llm_model = st.selectbox("LLM", ["gemini-2.5-flash", "gemini-2.0-flash"])
+        prompt_variant = st.selectbox("Prompt version", list(PROMPT_VARIANTS))
+        if not secret("GEMINI_API_KEY"):
+            st.error("Add GEMINI_API_KEY to Streamlit Secrets or disable Gemini.")
+    seed = st.number_input("Validation sampling seed", min_value=1, max_value=9999999, value=2026, step=1)
+    run = st.button("🚀 Analyse uploaded files", type="primary", use_container_width=True)
 
 if run:
-    if not ifc_upload or not spec_upload:
-        st.error("Upload both the IFC model and the specification PDF.")
-    elif mode == "Verified contractual rule" and not applicability_confirmed:
-        st.error("Contractual verdicts require explicit independent applicability confirmation.")
-    elif verified_rule and not reference.strip():
-        st.error("Provide a precise clause/page reference or synthetic test reference.")
-    elif use_llm and not read_secret("GEMINI_API_KEY"):
-        st.error("Provide GEMINI_API_KEY in Secrets or turn off optional Gemini.")
+    if not ifc_upload or not pdf_upload:
+        st.error("Upload both an IFC model and a searchable PDF.")
+    elif use_llm and not secret("GEMINI_API_KEY"):
+        st.error("Gemini API key missing. Add secret or disable Gemini.")
+    elif mode == "Verified contractual rule" and not confirmed:
+        st.error("Confirm project/document/rule scope independently first, or choose Evidence extraction only.")
     else:
         try:
-            rule = None
-            if verified_rule:
-                rule = AuditRule(
-                    thickness_mm=float(required), tolerance_mm=float(tolerance),
-                    scope=scope, name_contains=substring, global_id=rule_global_id,
-                    required_materials=tuple(x.strip() for x in material_terms.split(",") if x.strip()),
-                    source=reference.strip(), test_mode=mode == "Controlled synthetic test"
-                )
-            ifc_bytes = ifc_upload.getvalue()
-            pdf_bytes = spec_upload.getvalue()
-            with st.spinner("Extracting IFC elements and locating relevant PDF evidence..."):
-                elements = _extract(ifc_bytes, keyword)
-                candidates, total_candidates = clause_candidates(pdf_bytes, keyword)
-            if not elements:
-                st.warning("No matching IFC entities were found. Check the IFC component filter.")
-            else:
-                graph = []
-                graph_error = ""
-                if with_graph:
-                    with st.spinner("Retrieving IFC graph context..."):
-                        try:
-                            graph = _graph_context(ifc_bytes, [x["GlobalId"] for x in elements])
-                        except Exception as ex:
-                            graph_error = f"Neo4j retrieval unavailable: {type(ex).__name__}: {ex}"
-                rows = audit_elements(elements, rule)
-                llm_output = ""
-                prompt_hash = ""
-                if use_llm:
-                    # Human review is still required even if the LLM cites a real PDF page.
-                    graph_text = json.dumps(graph[:12], ensure_ascii=False, default=str)
-                    prompt = prompt_for(keyword, candidates_text(candidates), llm_variant, graph_text)
-                    prompt_hash = prompt_sha256(prompt)
-                    with st.spinner("Gemini: finding candidate clauses (NOT issuing a verdict)..."):
-                        try:
-                            llm_output = candidate_clauses(read_secret("GEMINI_API_KEY"), prompt, llm_model)
-                        except Exception as ex:
-                            llm_output = f"Gemini request unavailable: {type(ex).__name__}: {ex}"
-                st.session_state["revision_v2_results"] = {
-                    "rows": rows, "elements": elements, "candidates": candidates,
-                    "total_candidates": total_candidates, "graph": graph,
-                    "graph_error": graph_error, "llm_output": llm_output,
-                    "prompt_hash": prompt_hash, "llm_model": llm_model if use_llm else None,
-                    "llm_variant": llm_variant if use_llm else None, "mode": mode,
-                    "gemini_enabled": use_llm, "neo4j_enabled": with_graph,
-                    "IFC_SHA256": hashlib.sha256(ifc_bytes).hexdigest(),
-                    "PDF_SHA256": hashlib.sha256(pdf_bytes).hexdigest(),
-                    "audit_input_signature": (ifc_upload.name, spec_upload.name, keyword),
-                }
-        except ValueError as exc:
-            st.error(f"Rule/configuration error: {exc}")
+            if mode != "Evidence extraction only":
+                try:
+                    reference = float(reference_text.strip())
+                    tolerance = float(tol_text.strip())
+                except (TypeError, ValueError):
+                    raise ValueError("Enter your numeric requirement and tolerance in millimetres.")
+                scope = {"One exact GlobalId":"global_id", "Element name contains...":"name_contains",
+                         "External flag=True":"external", "ALL compatible elements (synthetic only)":"all"}[scope_name]
+                rule = AuditRule(thickness_mm=reference, tolerance_mm=tolerance, scope=scope,
+                                 name_contains=scope_filter, global_id=gid,
+                                 required_materials=tuple(x.strip() for x in material_text.split(",") if x.strip()),
+                                 source=citation.strip(), test_mode=mode=="Controlled synthetic test", metric=metric)
+            b_ifc, b_pdf = ifc_upload.getvalue(), pdf_upload.getvalue()
+            model_hash, pdf_hash = hashlib.sha256(b_ifc).hexdigest(), hashlib.sha256(b_pdf).hexdigest()
+            with st.spinner("Extracting IFC elements and PDF candidate evidence..."):
+                elements = extract_file(b_ifc, component)
+                actual_classes = sorted({e["Type"] for e in elements})
+                candidates, keyword_hits = clause_candidates(b_pdf, actual_classes or component)
+            rows = audit_elements(elements, rule)
+            graph, graph_count, graph_error = [], 0, ""
+            if with_graph and elements:
+                with st.spinner("Neo4j: persisting and retrieving project-specific evidence..."):
+                    try:
+                        graph, graph_count = graph_lookup(model_hash, elements)
+                    except Exception as exc:
+                        graph_error = f"{type(exc).__name__}: {exc}"
+            llm_output, llm_error, prompt_hash = "", "", ""
+            if use_llm:
+                excerpts = candidates_text(candidates)
+                selected_graph = json.dumps(graph[:12], ensure_ascii=False, default=str)
+                prompt = prompt_for(", ".join(actual_classes), excerpts, prompt_variant, selected_graph)
+                prompt_hash = prompt_sha256(prompt)
+                with st.spinner("Gemini: suggesting traceable clauses (no compliance verdict)..."):
+                    try:
+                        llm_output = candidate_clauses(secret("GEMINI_API_KEY"), prompt, llm_model)
+                    except Exception as exc:
+                        llm_error = f"{type(exc).__name__}: {exc}"
+            st.session_state["v4_report"] = {
+                "ifc_name": ifc_upload.name, "pdf_name": pdf_upload.name, "classes": actual_classes,
+                "elements": elements, "rows": rows, "candidates": candidates, "hit_count":keyword_hits,
+                "graph":graph,"graph_count":graph_count,"graph_error":graph_error,
+                "gemini_text":llm_output,"gemini_error":llm_error,"gemini_model":llm_model if use_llm else None,
+                "prompt_variant":prompt_variant if use_llm else None,"prompt_hash":prompt_hash,
+                "IFC_SHA256":model_hash,"PDF_SHA256":pdf_hash,"mode":mode,"sampling_seed":int(seed),
+                "graph_requested":with_graph,"gemini_requested":use_llm,"version":APP_VERSION,
+                "created_utc":datetime.now(timezone.utc).isoformat(),
+            }
         except Exception as exc:
-            st.exception(exc)
+            st.error(f"Run could not complete: {type(exc).__name__}: {exc}")
 
-report = st.session_state.get("revision_v2_results")
-if report:
-    st.subheader("📊 Model evidence & rule test results")
-    summary = categories_summary(report["rows"])
-    n = len(report["rows"])
-    count_missing = sum(numeric_width(x) is None for x in report["elements"])
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("IFC entities extracted", n)
-    k2.metric("Width not resolved", count_missing)
-    k3.metric("Discrepancies (if rule applies)", sum(summary.get(c, 0) for c in
-              ("GEOMETRY_MISMATCH", "MATERIAL_MISMATCH", "MISMATCH_BOTH")))
-    k4.metric("Not assessed / out of scope", summary.get("NOT_ASSESSABLE", 0) + summary.get("NOT_APPLICABLE", 0) + summary.get("SCOPE_UNVERIFIED", 0))
-    if any(x.get("IFCType") not in {"IfcWall", "IfcWallStandardCase", "IfcCurtainWall"} for x in report["rows"]):
-        st.info("Non-wall dimensions are EXPLORATORY. Beam/slab/door/window width needs class-specific measurement definitions and is not verified thickness compliance.")
-    if report["mode"] == "Evidence extraction only":
-        st.info("No numerical compliance decision was made. All rows are NOT ASSESSABLE until an independently confirmed rule is provided.")
-    elif report["mode"] == "Controlled synthetic test":
-        st.warning("CONTROLLED TEST RESULTS ONLY — discrepancies do not constitute building non-compliance.")
+result = st.session_state.get("v4_report")
+if result:
+    st.header("📊 Evidence and controlled results")
+    rows, elements = result["rows"], result["elements"]
+    counts = categories_summary(rows)
+    wall_count = sum(e["Type"] in MEASUREMENT_TYPES["Wall thickness"] for e in elements)
+    wall_unknown = sum(e["Type"] in MEASUREMENT_TYPES["Wall thickness"] and not isinstance(e.get("Width"), (int,float)) for e in elements)
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("IFC elements",len(rows))
+    c2.metric("Wall thickness unresolved",f"{wall_unknown}/{wall_count}")
+    c3.metric("Discrepancies (scoped rule only)",sum(counts.get(c,0) for c in ("GEOMETRY_MISMATCH","MATERIAL_MISMATCH","MISMATCH_BOTH")))
+    c4.metric("Not assessable/out of scope",sum(counts.get(c,0) for c in ("NOT_ASSESSABLE","NOT_APPLICABLE","SCOPE_UNVERIFIED")))
+    st.caption("Classes in this IFC selection: " + (", ".join(result["classes"]) or "None"))
+    if result["mode"] == "Evidence extraction only":
+        st.info("No PASS/FAIL claim is made without a verified applicable rule.")
+    elif result["mode"] == "Controlled synthetic test":
+        st.warning("SYNTHETIC TEST: observed mismatch does not establish real contract non-compliance.")
     else:
-        st.warning("Verified-rule check only. This is not a comprehensive contract or structural safety approval.")
-    st.write("**Category counts:**", summary)
-    _display_rows(report["rows"])
+        st.warning("User-verified rule comparison only. Other requirements and structural safety remain unassessed.")
+    st.write("**Result categories:**", counts)
+    table_and_export(rows)
 
-    sample_path = Path(__file__).parent / "validation" / "sample_30_elements.csv"
-    if sample_path.exists():
-        sample_enriched = merge_validation_sample(sample_path.read_bytes(), report["rows"])
-        matched_sample = sum(x["ExtractedInRun"] == "YES" for x in sample_enriched)
-        st.subheader("🧪 Supervisor validation sample — 30 elements")
-        st.write(f"Evidence found for **{matched_sample} / {len(sample_enriched)}** selected GlobalIds in this run.")
-        st.caption("Ground truth is deliberately blank. Independently verify contract scope, clause and actual requirement before assigning labels.")
-        st.download_button("⬇️ Download 30-element evidence & ground-truth worksheet (CSV)",
-                           validation_csv(sample_enriched).encode("utf-8-sig"),
-                           "validation_30_ground_truth_to_complete.csv", "text/csv")
-        if matched_sample < len(sample_enriched):
-            st.info("Select 'All sample types' and rerun Evidence extraction only to collect all sample element classes.")
+    sample = sample_from_current_model(rows, n=min(30,len(rows)), seed=result["sampling_seed"])
+    sheet = evidence_review_worksheet(sample)
+    st.subheader(f"🧪 This IFC's reproducible validation sample: {len(sheet)} elements")
+    st.caption("Generated from the CURRENT uploaded IFC (not pre-stored IDs). Sampled categories are balanced where available. "
+               "All contractual truth fields are blank pending an independent reviewer.")
+    st.download_button("⬇️ Download current-model ground-truth worksheet (CSV)",
+                       validation_csv(sheet).encode("utf-8-sig"), "ground_truth_for_uploaded_ifc.csv","text/csv")
+    reviewed = st.file_uploader("Optional: upload manually reviewed/labelled worksheet to calculate metrics",type=["csv"],key="reviewed_truth")
+    if reviewed is not None:
+        try:
+            table = pd.read_csv(io.BytesIO(reviewed.getvalue()),dtype=str).fillna("")
+            verified = table[table["verified_document_applies"].str.strip().str.lower().isin(["yes","true","1"])]
+            metrics = evaluate_records(verified.to_dict("records"))
+            st.write("**Evaluation on confirmed applicable and fully-labelled elements only:**",metrics)
+            st.caption("These metrics exclude abstentions and cannot prove population-wide or cross-project performance.")
+        except Exception as exc:
+            st.error(f"Could not evaluate human review CSV: {exc}")
 
-    with st.expander(f"📄 PDF candidate clauses ({report['total_candidates']} keyword hits; {len(report['candidates'])} selected)"):
-        st.caption("Candidate evidence only. PDF page numbers include the cover page. Verify clause applicability manually.")
-        st.text(candidates_text(report["candidates"]))
-    if report["graph_error"]:
-        st.warning(report["graph_error"])
-    if report["graph"]:
-        with st.expander(f"🕸️ Retrieved Neo4j graph context ({len(report['graph'])} rows)"):
-            st.dataframe(pd.DataFrame(report["graph"]), hide_index=True, use_container_width=True)
-    if report["llm_output"]:
-        st.subheader("🧠 AI-suggested specification evidence (unverified)")
-        st.caption(f"Model {report['llm_model']} | {report['llm_variant']} | Prompt SHA256: {report['prompt_hash']}")
-        st.text(report["llm_output"])
-    st.download_button(
-        "⬇️ Download research run metadata (JSON)",
-        json.dumps({k: report[k] for k in ("mode", "IFC_SHA256", "PDF_SHA256", "prompt_hash", "llm_model", "llm_variant", "gemini_enabled", "neo4j_enabled")}, indent=2),
-        "audit_run_metadata.json", "application/json"
-    )
-    st.caption("No overall APPROVED / REVISION REQUIRED verdict is produced automatically. Independent ground-truth validation remains necessary.")
+    with st.expander(f"📄 PDF evidence candidates ({result['hit_count']} hits; {len(result['candidates'])} selected)"):
+        st.text(candidates_text(result["candidates"]) or "No class-relevant PDF fragments found.")
+    if result["graph_error"]:
+        st.error("Neo4j connection/query error: " + result["graph_error"])
+    if result["graph_requested"]:
+        st.caption(f"Neo4j graph elements uploaded: {result['graph_count']}; neighbours retrieved: {len(result['graph'])}. "
+                   "For large models only the first 300 sorted elements are graphed in this prototype.")
+    if result["graph"]:
+        with st.expander(f"🕸️ Neo4j evidence from this IFC hash ({len(result['graph'])} records)"):
+            st.dataframe(pd.DataFrame(result["graph"]),hide_index=True,use_container_width=True)
+    if result["gemini_error"]:
+        st.error("Gemini request error: " + result["gemini_error"])
+    if result["gemini_requested"]:
+        st.subheader("🧠 Gemini-suggested PDF clauses — unverified")
+        st.caption(f"Model: {result['gemini_model']} | Variant: {result['prompt_variant']} | Prompt SHA-256: {result['prompt_hash']}")
+        st.text(result["gemini_text"] or "No response available")
+    metadata = {k: result[k] for k in ("version","created_utc","IFC_SHA256","PDF_SHA256","mode","classes",
+                       "graph_requested","graph_count","graph_error","gemini_requested","gemini_model",
+                       "prompt_variant","prompt_hash","gemini_error","sampling_seed")}
+    metadata["graph_retrieved_rows"] = len(result["graph"])
+    metadata["gemini_output_available"] = bool(result["gemini_text"])
+    st.download_button("⬇️ Research reproducibility metadata (JSON)",json.dumps(metadata,indent=2),
+                       "audit_run_metadata_v4.json","application/json")
+    st.caption("NO automatic APPROVED/FAILED verdict. A second independent IFC test is needed to establish interoperability beyond the tested model.")
 else:
-    st.info("Upload your IFC and PDF in the sidebar. Start with 'Evidence extraction only' to inspect the model safely.")
+    st.info("Upload your own IFC and PDF, then start with Evidence extraction only. This app contains no model-specific sample IDs or mandatory dimensions.")

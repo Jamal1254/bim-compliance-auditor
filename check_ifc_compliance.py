@@ -1,325 +1,229 @@
+"""IFC2x3 / IFC4 element evidence extraction, independent of project names.
+
+Never infer certified dimensions from a filename, element name, or bounding box.
+Declared IFC units are converted to mm consistently. Incompatible or uncertain
+values remain evidence for review, not compliance decisions.
+"""
+from __future__ import annotations
 import re
+from collections import defaultdict
 import ifcopenshell
-import ifcopenshell.geom
 import ifcopenshell.util.element
+import ifcopenshell.util.unit
+
+ALIASES = {
+    "wall": ("IfcWall", "IfcCurtainWall"), "beam": ("IfcBeam",),
+    "slab": ("IfcSlab",), "column": ("IfcColumn",),
+    "door": ("IfcDoor",), "window": ("IfcWindow",),
+    "roof": ("IfcRoof",), "stair": ("IfcStair", "IfcStairFlight"),
+    "ramp": ("IfcRamp", "IfcRampFlight"), "footing": ("IfcFooting",),
+    "pile": ("IfcPile",), "member": ("IfcMember",),
+    "plate": ("IfcPlate",), "railing": ("IfcRailing",),
+    "covering": ("IfcCovering",), "pipe": ("IfcPipeSegment",),
+    "duct": ("IfcDuctSegment",),
+}
+ALL_ALIASES = {"all model elements", "all elements", "all", "*", "all sample types"}
 
 
-def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
-    """Exhaustively scans the IFC model for ALL components matching the keyword
-
-    and extracts their dimensions, materials, and spatial info using a 4-tier
-    fallback framework.
-    """
-    try:
-        ifc_file = ifcopenshell.open(file_path)
-    except Exception as e:
-        print(f"Error opening IFC file: {e}")
-        return []
-
-    # Detect project length units to prevent feet/meters export errors
-    unit_scale_to_mm = 1000.0  # Default assume meters -> mm
-    try:
-        for unit in ifc_file.by_type("IfcUnitAssignment")[0].Units:
-            if getattr(unit, "UnitType", "") == "LENGTHUNIT":
-                prefix = str(getattr(unit, "Prefix", "")).upper()
-                name = str(getattr(unit, "Name", "")).upper()
-                if "FOOT" in name or "FEET" in name:
-                    unit_scale_to_mm = 304.8
-                elif "INCH" in name:
-                    unit_scale_to_mm = 25.4
-                elif "MILLI" in prefix or "MILLIMETRE" in name:
-                    unit_scale_to_mm = 1.0
-                elif "CENTI" in prefix or "CENTIMETRE" in name:
-                    unit_scale_to_mm = 10.0
-                elif "METRE" in name:
-                    unit_scale_to_mm = 1000.0
-    except Exception:
-        unit_scale_to_mm = 1000.0
-
-    all_matched_elements = []
-
-    # Strict IFC type selection avoids including fixtures named "wall-mounted".
-    # A model component is an entity because of its IFC class, NOT a name token.
-    kind = (search_keyword or "Wall").strip().casefold()
-    allowed = {
-        "wall": ("IfcWall", "IfcCurtainWall"),
-        "column": ("IfcColumn",),
-        "beam": ("IfcBeam",),
-        "slab": ("IfcSlab",),
-        "door": ("IfcDoor",),
-        "window": ("IfcWindow",),
-        "roof": ("IfcRoof",),
-    }
-    aliases = [x.strip().casefold() for x in (search_keyword or "Wall").split(",") if x.strip()]
-    if aliases == ["all sample types"]:
-        aliases = ["wall", "beam", "slab", "door", "window"]
-    if not aliases:
-        aliases = ["wall"]
+def parse_component_filter(query):
+    tokens = [x.strip() for x in str(query or "all model elements").split(",") if x.strip()]
+    if not tokens or any(t.casefold() in ALL_ALIASES for t in tokens):
+        return ("all", ())
     classes = []
-    for alias in aliases:
-        if alias in allowed:
-            classes.extend(allowed[alias])
-        elif alias.startswith("ifc"):
-            classes.append(next(x.strip() for x in (search_keyword or "Wall").split(",") if x.strip().casefold() == alias))
+    for raw in tokens:
+        term = raw.casefold()
+        if term in ALIASES:
+            classes.extend(ALIASES[term])
+        elif re.fullmatch(r"Ifc[A-Za-z0-9_]+", raw, re.I):
+            classes.append("Ifc" + raw[3:])
         else:
-            raise ValueError("Unknown IFC type: " + alias + ". Use Wall, Beam, Slab, Door, Window or an Ifc class name")
-    classes = tuple(dict.fromkeys(classes))
-    all_matched_elements = [
-        element for element in ifc_file.by_type("IfcProduct")
-        if any(element.is_a(cls) for cls in classes)
-    ]
+            raise ValueError(f"Unknown IFC class/category '{raw}'. Try 'All model elements' or 'IfcWall,IfcBeam'.")
+    return ("classes", tuple(dict.fromkeys(classes)))
 
-    if not all_matched_elements:
-        return []
 
-    extracted_walls_data = []
+def _select_elements(model, filter_query):
+    mode, classes = parse_component_filter(filter_query)
+    # IFC's own class hierarchy does not depend on model authoring software.
+    result = []
+    for entity in model.by_type("IfcElement"):
+        if entity.is_a("IfcFeatureElement") or not getattr(entity, "GlobalId", None):
+            continue
+        if mode == "all" or any(entity.is_a(c) for c in classes):
+            result.append(entity)
+    return sorted(result, key=lambda e: str(e.GlobalId))
 
-    for target_element in all_matched_elements:
-        data = {
-            "Type": target_element.is_a(),
-            "Name": getattr(target_element, "Name", None) or "Unnamed Element",
-            "GlobalId": target_element.GlobalId,
-            "IsExternal": None,  # Unknown until explicitly identified from IFC data
-            "Width": "Unknown",
-            "WidthSource": "Unknown",
-            "CavityWidth": "None/Undefined",
-            "Materials": [],
-            "Storey": "Unknown",
-        }
 
-        # Extract Spatial Zone / Storey Level.
-        # Spatial containment (element -> storey) is carried by
-        # IfcRelContainedInSpatialStructure, exposed on the element via the
-        # inverse attribute `ContainedInStructure`. `Decomposes` carries
-        # IfcRelAggregates instead (e.g. a wall part belonging to a curtain
-        # wall) and will essentially never contain a spatial-structure
-        # relationship, so it was never matching before.
-        if hasattr(target_element, "ContainedInStructure"):
-            for rel in target_element.ContainedInStructure:
-                if rel.is_a("IfcRelContainedInSpatialStructure"):
-                    data["Storey"] = getattr(
-                        rel.RelatingStructure, "Name", "Unknown"
-                    )
-                    break
+def _mm_per_native_unit(model):
+    """IfcOpenShell's standard IFC-unit conversion handles SI and feet/inches."""
+    scale = float(ifcopenshell.util.unit.calculate_unit_scale(model)) * 1000.0
+    if not (0 < scale < 1e9):
+        raise ValueError("Invalid IFC project LENGTHUNIT; cannot safely convert to mm.")
+    return scale
 
-        # Fallback: if the element itself has no direct spatial containment
-        # (e.g. it's an aggregate part), inherit the storey from its
-        # decomposition parent.
-        if data["Storey"] == "Unknown" and hasattr(target_element, "Decomposes"):
-            for rel in target_element.Decomposes:
-                if rel.is_a("IfcRelAggregates"):
-                    parent = getattr(rel, "RelatingObject", None)
-                    if parent is not None and hasattr(parent, "ContainedInStructure"):
-                        for prel in parent.ContainedInStructure:
-                            if prel.is_a("IfcRelContainedInSpatialStructure"):
-                                data["Storey"] = getattr(
-                                    prel.RelatingStructure, "Name", "Unknown"
-                                )
-                                break
-                if data["Storey"] != "Unknown":
-                    break
 
-        # Extract Associated Materials (IfcMaterial / IfcMaterialLayerSet).
-        # While walking the layers, also remember the thickness of any layer
-        # that looks like a cavity/air gap - this feeds a cavity-width
-        # fallback below for the (common) case where no explicit
-        # "CavityWidth"-style property set exists, even though the material
-        # layer breakdown clearly shows one (e.g. "Cavity Fill (150.02mm)").
-        cavity_thickness_from_materials = None
-        layer_thickness_sum = 0.0
-        has_layer_set = False
+def _length(value, scale):
+    if isinstance(value, bool):
+        return None
+    try:
+        n = float(value)
+        return round(n * scale, 4) if 0 < n < float("inf") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _boolean(value):
+    if hasattr(value, "wrappedValue"):
+        value = value.wrappedValue
+    if isinstance(value, (bool, int)):
+        return bool(value)
+    if isinstance(value, str) and value.strip().casefold() in {"true", "yes", "1", "false", "no", "0"}:
+        return value.strip().casefold() in {"true", "yes", "1"}
+    return None
+
+
+def _storey(element):
+    visited = set()
+    pending = [element]
+    while pending:
+        current = pending.pop()
+        ident = current.id()
+        if ident in visited:
+            continue
+        visited.add(ident)
+        for rel in getattr(current, "ContainedInStructure", ()) or ():
+            s = getattr(rel, "RelatingStructure", None)
+            if s is not None:
+                return getattr(s, "Name", "Unknown") or "Unknown"
+        for rel in getattr(current, "Decomposes", ()) or ():
+            parent = getattr(rel, "RelatingObject", None)
+            if parent is not None:
+                pending.append(parent)
+    return "Unknown"
+
+
+def _materials(element, scale):
+    names, sums, cavity = [], [], None
+    mat = ifcopenshell.util.element.get_material(element, should_skip_usage=False)
+    if mat is None:
+        return names, sums, cavity
+    layer_set = getattr(mat, "ForLayerSet", None)
+    if layer_set is None and mat.is_a("IfcMaterialLayerSet"):
+        layer_set = mat
+    if layer_set is not None:
+        total = 0.0
+        for layer in getattr(layer_set, "MaterialLayers", ()) or ():
+            thick = _length(getattr(layer, "LayerThickness", None), scale)
+            name = getattr(getattr(layer, "Material", None), "Name", None) or "Unnamed material"
+            names.append(f"{name} ({thick} mm)" if thick is not None else name)
+            if thick is not None:
+                total += thick
+            if cavity is None and thick is not None and any(x in name.casefold() for x in ("cavity", "air gap", "airspace", "hohlraum", "luftschicht")):
+                cavity = thick
+        if total > 0:
+            sums.append((round(total, 3), "IfcMaterialLayerSet total"))
+        return names, sums, cavity
+    if mat.is_a("IfcMaterial"):
+        return [getattr(mat, "Name", "Unnamed material") or "Unnamed material"], sums, cavity
+    for attribute in ("Materials", "MaterialConstituents", "MaterialProfiles"):
+        for item in (getattr(mat, attribute, None) or []):
+            material = getattr(item, "Material", item)
+            name = getattr(material, "Name", "") or getattr(item, "Name", "")
+            if name:
+                names.append(str(name))
+    return names, sums, cavity
+
+
+def _property_evidence(element, scale):
+    psets = ifcopenshell.util.element.get_psets(element) or {}
+    values = defaultdict(list)
+    ext = None
+    for section, props in psets.items():
+        if not isinstance(props, dict):
+            continue
+        for key, value in props.items():
+            if isinstance(value, (list, tuple, dict)) or value is None:
+                continue
+            lname = str(key).casefold().replace(" ", "").replace("_", "")
+            if lname == "isexternal":
+                parsed = _boolean(value)
+                if parsed is not None:
+                    ext = parsed
+            if lname in {"overallthickness", "wallthickness", "nominalthickness", "thickness", "width"}:
+                # A generic Width in unrelated property sets can mean panel width, NOT wall thickness.
+                if lname == "width" and "qto_wall" not in section.casefold():
+                    continue
+                size = _length(value, scale)
+                if size is not None:
+                    values["Thickness"].append((size, f"IFC {section}.{key}"))
+            if lname in {"height", "overallheight", "overallwidth", "length", "depth"}:
+                size = _length(value, scale)
+                if size is not None:
+                    values[str(key)].append((size, f"IFC {section}.{key}"))
+    return values, ext
+
+
+def _resolve_thickness(candidates):
+    """Disagreeing exported quantities cause review, never an arbitrary PASS."""
+    if not candidates:
+        return ("Unknown", "No explicit comparable IFC wall thickness", "MISSING", [])
+    # Layer sum is the primary width measurement; explicit IFC wall quantities
+    # can corroborate it. No name parsing or bounding-box guessing.
+    first = candidates[0][0]
+    distinct = {round(value, 1) for value, _ in candidates}
+    if len(distinct) > 1:
+        return ("Unknown", "Conflicting IFC thickness sources: manual review", "CONFLICTING", [f"{v:g} mm [{s}]" for v,s in candidates])
+    return (round(first, 2), candidates[0][1], "DECLARED", [f"{v:g} mm [{s}]" for v,s in candidates])
+
+
+def extract_all_ifc_wall_dimensions(file_path, search_keyword="All model elements"):
+    """Legacy-compatible API returning evidence for any IFC element class.
+
+    A wall thickness is comparable only when based on declared model evidence;
+    other classes get independent size observations, never a wall-thickness claim.
+    """
+    model = ifcopenshell.open(file_path)  # Fail visibly on invalid IFC.
+    scale = _mm_per_native_unit(model)
+    elements = _select_elements(model, search_keyword)
+    out = []
+    for el in elements:
+        typ = el.is_a()
+        warnings = []
         try:
-            mats = ifcopenshell.util.element.get_material(target_element)
-            if mats:
-                if hasattr(mats, "ForLayerSet"):
-                    has_layer_set = True
-                    for layer in mats.ForLayerSet.MaterialLayers:
-                        mat_name = getattr(
-                            layer.Material, "Name", "Unnamed Layer"
-                        )
-                        thick = (
-                            round(layer.LayerThickness * unit_scale_to_mm, 2)
-                            if layer.LayerThickness
-                            else 0
-                        )
-                        data["Materials"].append(f"{mat_name} ({thick}mm)")
-                        layer_thickness_sum += thick
-
-                        if (
-                            cavity_thickness_from_materials is None
-                            and mat_name
-                            and ("cavity" in mat_name.lower() or mat_name.lower() == "air")
-                        ):
-                            cavity_thickness_from_materials = thick
-                elif hasattr(mats, "Materials"):
-                    for m in mats.Materials:
-                        data["Materials"].append(
-                            getattr(m, "Name", "Unnamed Material")
-                        )
-                else:
-                    data["Materials"].append(
-                        getattr(mats, "Name", "Unnamed Material")
-                    )
-        except Exception:
-            pass
-
-        # Extract Property Sets from Instance Layer
-        psets = ifcopenshell.util.element.get_psets(target_element)
-
-        # Extract Property Sets from Type Layer
-        if hasattr(target_element, "IsDefinedBy"):
-            for rel in target_element.IsDefinedBy:
-                if rel.is_a("IfcRelDefinesByType"):
-                    type_element = rel.RelatingType
-                    if type_element:
-                        type_psets = ifcopenshell.util.element.get_psets(
-                            type_element
-                        )
-                        for t_name, t_props in type_psets.items():
-                            if t_name not in psets:
-                                psets[t_name] = t_props
-                            else:
-                                for k, v in t_props.items():
-                                    if k not in psets[t_name]:
-                                        psets[t_name][k] = v
-
-        # Flatten all properties into lowercase keys
-        flat_props = {}
-        for pset_name, props in psets.items():
-            for k, v in props.items():
-                flat_props[k.lower()] = v
-                if "isexternal" in k.lower() and isinstance(v, (bool, int)):
-                    data["IsExternal"] = bool(v)
-
-        # Tier 0 (highest priority): sum of material layer thicknesses.
-        # This is the most trustworthy width source we have - it's the
-        # actual assembly build-up (brick + cavity + block + board, etc.)
-        # that we're already extracting for the Materials list, rather than
-        # a loosely name-matched property. On the models checked so far this
-        # summed value matched the "true" wall thickness almost exactly
-        # (within rounding), whereas the generic property-sweep below can
-        # pick up an unrelated same-named property (e.g. a panel/module
-        # width on a storefront-style assembly) and return something wildly
-        # wrong. Only trust this when there's an actual layer set AND the
-        # sum is a sane, non-zero number.
-        if has_layer_set and layer_thickness_sum > 0:
-            data["Width"] = round(layer_thickness_sum, 2)
-            data["WidthSource"] = "Sum of IFC material layers"
-
-        # Fallback 1: Deep Metadata Attribute Sweep.
-        # More specific keys are tried before the bare "width" key, since a
-        # generic "Width" property (especially one merged in from the
-        # element's Type parameters) is the most likely to actually
-        # describe something other than wall thickness - e.g. a panel or
-        # module width in a curtain-wall-style assembly.
-        width_keywords = [
-            "wallthickness",
-            "overallthickness",
-            "nominalthickness",
-            "thickness/width",
-            "thickness",
-            "width",
-        ]
-        if data["Width"] == "Unknown":
-            for kw in width_keywords:
-                if kw in flat_props and flat_props[kw] not in [
-                    None,
-                    "",
-                    "Unknown",
-                ]:
-                    try:
-                        val = float(flat_props[kw])
-                        # Apply unit conversion scale if needed
-                        if val < 5.0 and unit_scale_to_mm != 1.0:
-                            val = val * unit_scale_to_mm
-                        if val > 0:
-                            data["Width"] = round(val, 2)
-                            data["WidthSource"] = f"IFC property: {kw}"
-                            break
-                    except (ValueError, TypeError):
-                        continue
-
-        # Extract Cavity Data
-        cavity_keywords = ["cavity", "cavitywidth", "airgap", "voidwidth"]
-        for ck in cavity_keywords:
-            if ck in flat_props and flat_props[ck] not in [None, ""]:
-                data["CavityWidth"] = flat_props[ck]
-                break
-
-        # Fallback: no explicit cavity property, but the material layer
-        # breakdown already showed a cavity/air layer - use its thickness
-        # rather than reporting "None/Undefined" when the data is right
-        # there in the materials list.
-        if data["CavityWidth"] == "None/Undefined" and cavity_thickness_from_materials is not None:
-            data["CavityWidth"] = f"{cavity_thickness_from_materials} (from material layer)"
-
-        # Fallback 2: Name/Type Regex Mining
-        if data["Width"] == "Unknown":
-            search_string = f"{data['Name']} {data['Type']}"
-            match = re.search(
-                r"(\d+(?:\.\d+)?)\s*mm", search_string, re.IGNORECASE
-            )
-            if match:
-                try:
-                    extracted_width = float(match.group(1))
-                    if extracted_width > 0:
-                        data["Width"] = extracted_width
-                        data["WidthSource"] = "Type/name token (mm)"
-                except (ValueError, TypeError):
-                    pass
-
-        # Fallback 3: Direct 3D Bounding Box Geometry Extrusion Processing.
-        # This assumes an axis-aligned, roughly rectangular element where the
-        # shortest horizontal bounding-box side approximates wall thickness.
-        # That assumption breaks for L-shaped runs, curved segments, or
-        # walls at odd angles - on those elements this fallback can return
-        # something closer to the wall's *length* than its thickness.
-        if data["Width"] == "Unknown":
-            try:
-                settings = ifcopenshell.geom.settings()
-                settings.set(settings.USE_WORLD_COORDINATES, True)
-                shape = ifcopenshell.geom.create_shape(
-                    settings, target_element
-                )
-
-                verts = shape.geometry.verts
-                grouped_verts = [
-                    verts[i : i + 3] for i in range(0, len(verts), 3)
-                ]
-
-                if grouped_verts:
-                    x_coords = [v[0] for v in grouped_verts]
-                    y_coords = [v[1] for v in grouped_verts]
-
-                    dx = max(x_coords) - min(x_coords)
-                    dy = max(y_coords) - min(y_coords)
-
-                    # Compute thickness using actual model scale factors
-                    # IfcOpenShell's geometry vertices are in metres by default unless
-                    # CONVERT_BACK_UNITS is enabled. Multiplying by the IFC input
-                    # unit (e.g. 304.8 for feet) double-converts incorrectly.
-                    computed_thickness = min(dx, dy) * 1000.0
-                    if computed_thickness > 0:
-                        data["Width"] = round(computed_thickness, 2)
-                        data["WidthSource"] = "Axis-aligned 3D bounding-box (approximate)"
-            except Exception:
-                pass
-
-        # Universal sanity check - applied regardless of which tier above
-        # produced the value, since any of them (a mismatched property, a
-        # name-regex false hit, or a non-rectangular bounding box) can
-        # silently return something implausible. Flag rather than discard,
-        # so the raw number is still visible for manual review.
-        MAX_PLAUSIBLE_THICKNESS_MM = 600.0  # generous; even thick masonry cavity walls fall well under this
-        if isinstance(data["Width"], (int, float)) and data["Width"] > MAX_PLAUSIBLE_THICKNESS_MM:
-            data["WidthSource"] += " [flagged: >600 mm, verify for massive walls]"
-            data["Width"] = (
-                f"Unreliable ({data['Width']}mm - exceeds plausible wall"
-                " thickness; verify source property/geometry)"
-            )
-
-        if target_element.is_a() not in {"IfcWall", "IfcWallStandardCase"}:
-            data["WidthSource"] = "UNVERIFIED NON-WALL DIMENSION: " + str(data["WidthSource"])
-        extracted_walls_data.append(data)
-
-    return extracted_walls_data
+            materials, layer_candidates, cavity = _materials(el, scale)
+        except Exception as ex:
+            materials, layer_candidates, cavity = [], [], None
+            warnings.append("Material association extraction failed: " + type(ex).__name__)
+        try:
+            props, external = _property_evidence(el, scale)
+        except Exception as ex:
+            props, external = {}, None
+            warnings.append("Property extraction failed: " + type(ex).__name__)
+        try:
+            storey = _storey(el)
+        except Exception as ex:
+            storey = "Unknown"
+            warnings.append("Spatial containment extraction failed: " + type(ex).__name__)
+        wall = el.is_a("IfcWall")
+        thickness_candidates = layer_candidates + props.get("Thickness", []) if wall else []
+        width, source, quality, sources = _resolve_thickness(thickness_candidates) if wall else (
+            "Unknown", "Not a wall-thickness element", "UNVERIFIED_NON_WALL", [])
+        # Native IfcDoor and IfcWindow attributes are standard across IFC2x3/IFC4.
+        dimensions = {}
+        for attr in ("OverallWidth", "OverallHeight"):
+            observed = _length(getattr(el, attr, None), scale)
+            if observed is not None:
+                dimensions[attr + "_mm"] = observed
+        for k, observed in props.items():
+            if k != "Thickness" and observed:
+                dimensions[k + "_mm"] = observed[0][0]
+        out.append({
+            "Type": typ, "Name": getattr(el, "Name", "") or "Unnamed element",
+            "GlobalId": str(el.GlobalId), "Storey": storey,
+            "IsExternal": external, "Width": width, "WidthSource": source,
+            "MeasurementQuality": quality, "ThicknessCandidates": sources,
+            "CavityWidth": cavity if cavity is not None else "Not established",
+            "Materials": materials, "Dimensions_mm": dimensions,
+            "IFCSchema": model.schema, "IFC_mm_per_length_unit": scale,
+            "ExtractionWarnings": "; ".join(warnings),
+        })
+    return out

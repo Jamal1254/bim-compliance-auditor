@@ -1,0 +1,20 @@
+digraph AuditV4 {
+rankdir=LR;
+node [shape=box, style="rounded"];
+InputIFC [label="User IFC\nany supported schema / units"];
+InputPDF [label="User PDF\nsearchable text"];
+IFC [label="IFC evidence extractor\nunit conversion / provenance\nclass-aware measurements"];
+PDF [label="PDF candidate clauses\npage references / scope candidates"];
+Graph [label="Neo4j project-specific graph\nSHA-256 + GlobalId scoped"];
+LLM [label="Optional Gemini\nclauses suggested, never certified"];
+Rule [label="User independently verifies\nclause / scope / dimension"];
+Compare [label="Deterministic individual element check\nPASS / mismatch / abstain"];
+Sample [label="Current-model stratified sample\nmax 30 GlobalIds / seeded"];
+Review [label="Independent human ground truth"];
+Metrics [label="Only labelled comparable subset\nTP FP TN FN / F1 / coverage"];
+Export [label="CSV / metadata / evidence"];
+InputIFC -> IFC; InputPDF -> PDF;
+IFC -> Graph; IFC -> Compare; IFC -> Sample;
+PDF -> LLM; Graph -> LLM; LLM -> Rule; PDF -> Rule; Rule -> Compare;
+Compare -> Export; Sample -> Review; Compare -> Metrics; Review -> Metrics;
+}
