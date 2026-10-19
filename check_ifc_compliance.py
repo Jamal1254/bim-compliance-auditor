@@ -81,8 +81,9 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
             "Type": target_element.is_a(),
             "Name": getattr(target_element, "Name", "Unknown"),
             "GlobalId": target_element.GlobalId,
-            "IsExternal": False,
+            "IsExternal": None,  # Unknown until explicitly identified from IFC data
             "Width": "Unknown",
+            "WidthSource": "Unknown",
             "CavityWidth": "None/Undefined",
             "Materials": [],
             "Storey": "Unknown",
@@ -189,8 +190,8 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
         for pset_name, props in psets.items():
             for k, v in props.items():
                 flat_props[k.lower()] = v
-                if "isexternal" in k.lower() and v is True:
-                    data["IsExternal"] = True
+                if "isexternal" in k.lower() and isinstance(v, (bool, int)):
+                    data["IsExternal"] = bool(v)
 
         # Tier 0 (highest priority): sum of material layer thicknesses.
         # This is the most trustworthy width source we have - it's the
@@ -205,6 +206,7 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
         # sum is a sane, non-zero number.
         if has_layer_set and layer_thickness_sum > 0:
             data["Width"] = round(layer_thickness_sum, 2)
+            data["WidthSource"] = "Sum of IFC material layers"
 
         # Fallback 1: Deep Metadata Attribute Sweep.
         # More specific keys are tried before the bare "width" key, since a
@@ -234,6 +236,7 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                             val = val * unit_scale_to_mm
                         if val > 0:
                             data["Width"] = round(val, 2)
+                            data["WidthSource"] = f"IFC property: {kw}"
                             break
                     except (ValueError, TypeError):
                         continue
@@ -263,6 +266,7 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                     extracted_width = float(match.group(1))
                     if extracted_width > 0:
                         data["Width"] = extracted_width
+                        data["WidthSource"] = "Type/name token (mm)"
                 except (ValueError, TypeError):
                     pass
 
@@ -293,9 +297,13 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
                     dy = max(y_coords) - min(y_coords)
 
                     # Compute thickness using actual model scale factors
-                    computed_thickness = min(dx, dy) * unit_scale_to_mm
+                    # IfcOpenShell's geometry vertices are in metres by default unless
+                    # CONVERT_BACK_UNITS is enabled. Multiplying by the IFC input
+                    # unit (e.g. 304.8 for feet) double-converts incorrectly.
+                    computed_thickness = min(dx, dy) * 1000.0
                     if computed_thickness > 0:
                         data["Width"] = round(computed_thickness, 2)
+                        data["WidthSource"] = "Axis-aligned 3D bounding-box (approximate)"
             except Exception:
                 pass
 
@@ -306,6 +314,7 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="Wall"):
         # so the raw number is still visible for manual review.
         MAX_PLAUSIBLE_THICKNESS_MM = 600.0  # generous; even thick masonry cavity walls fall well under this
         if isinstance(data["Width"], (int, float)) and data["Width"] > MAX_PLAUSIBLE_THICKNESS_MM:
+            data["WidthSource"] += " [flagged: >600 mm, verify for massive walls]"
             data["Width"] = (
                 f"Unreliable ({data['Width']}mm - exceeds plausible wall"
                 " thickness; verify source property/geometry)"

@@ -1,0 +1,9 @@
+digraph G {
+  graph [rankdir=LR, bgcolor="white", nodesep=0.3, ranksep=0.55, pad=0.3, fontname="Arial"];
+  node [shape=box, style="rounded,filled", fontname="Arial", fontsize=10, color="#d7dce2", fillcolor="#f4f7fa", margin="0.15,0.12"];
+  edge [color="#68758a", arrowsize=0.6];
+  subgraph cluster_inputs {label="1. Inputs"; color="#b4c1d0"; IFC [label="IFC model\n(Project11.ifc)"]; PDF [label="Contract PDF\n(verify applicability)"]; USER [label="Human-confirmed\nrule + scope"];}
+  subgraph cluster_processing {label="2. Processing"; color="#b4c1d0"; PARSE [label="IfcOpenShell\nindividual GlobalIds"]; TEXT [label="pypdf\npage-linked clauses"]; NEO [label="Neo4j\nspatial/material links"]; RULES [label="Deterministic rule engine\nper-element check",fillcolor="#e8f2ff"]; AI [label="Gemini\nnarrative explanation"]}
+  subgraph cluster_results {label="3. Outputs and evaluation"; color="#b4c1d0"; CSV [label="Individual audit CSV\nseverity + evidence",fillcolor="#e9f7ef"]; REPORT [label="Readable audit report"]; GT [label="Human ground truth\n25-30 elements"]; MET [label="TP / FP / TN / FN\nprecision, recall, F1",fillcolor="#fff7e7"]}
+  IFC->PARSE; PARSE->RULES; PARSE->NEO; PDF->TEXT; USER->RULES; TEXT->AI; PARSE->AI; NEO->AI [label="graph evidence"]; RULES->CSV; AI->REPORT; CSV->GT [style=dashed]; GT->MET;
+}

@@ -7,7 +7,9 @@ class IFCGraphMapper:
         # Updated defaults matching your instance credentials file
         uri = st.secrets.get("NEO4J_URI", "neo4j+s://cf515c86.databases.neo4j.io")
         username = st.secrets.get("NEO4J_USERNAME", "cf515c86")
-        password = st.secrets.get("NEO4J_PASSWORD", "pwToINeEQUP8EctkjlHYZcOlWfb8RhI6TF32qtczq6M")
+        password = st.secrets.get("NEO4J_PASSWORD", "")
+        if not password:
+            raise RuntimeError("NEO4J_PASSWORD secret is required; hardcoded passwords are not supported")
         self.database = st.secrets.get("NEO4J_DATABASE", "cf515c86")
         
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
@@ -116,5 +118,26 @@ class IFCGraphMapper:
                             mat_name=material_name
                         )
 
-        self.close()
         return True
+
+    def retrieve_element_neighborhood(self, global_ids, limit=500):
+        """Fetch actual Neo4j neighbours for selected IFC element GlobalIds.
+
+        Results are concrete graph evidence; not an LLM-generated description.
+        """
+        if not global_ids:
+            return []
+        query = """
+        MATCH (e:BIMElement)
+        WHERE e.globalId IN $ids
+        OPTIONAL MATCH (e)-[:CONTAINED_IN]->(s:BuildingStorey)
+        OPTIONAL MATCH (e)-[:HAS_MATERIAL]->(m:Material)
+        RETURN e.globalId AS globalId, e.name AS name, e.type AS type,
+               e.isExternal AS graphExternal,
+               collect(DISTINCT s.name) AS storeys,
+               collect(DISTINCT m.name) AS materials
+        ORDER BY globalId
+        LIMIT $limit
+        """
+        with self.driver.session(database=self.database) as session:
+            return [dict(rec) for rec in session.run(query, ids=list(global_ids), limit=int(limit))]

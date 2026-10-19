@@ -1,9 +1,12 @@
 import csv
+import hashlib
+import json
 import io
 import os
 import tempfile
 from collections import defaultdict
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
+from audit_engine import AuditRule, audit_elements, categories_summary, issue_colour
 from google import genai
 from google.genai import types
 from pypdf import PdfReader
@@ -15,7 +18,7 @@ st.set_page_config(
 )
 st.title("🏗️ Automated BIM Model-vs-Specification Compliance Engine")
 st.markdown("""
-This deployment executes automated batch verification of **3D BIM schemas** against targeted semantic contexts extracted from **Technical Project Specifications** utilizing a dual **Graph-RAG** network pathway.
+This app provides IFC element-level auditing with human-confirmed rules and AI-assisted reports. Neo4j graph context is included when available. A contract must be independently confirmed as applicable to the model.
 """)
 
 st.divider()
@@ -48,6 +51,37 @@ with col1:
     st.subheader("📄 2. Upload Technical Specification")
     pdf_file = st.file_uploader("Upload Contract/Standard PDF", type=["pdf"])
 
+    st.divider()
+    st.subheader("📏 Human-confirmed dimension test")
+    enable_verified_rule = st.checkbox(
+        "Check elements against an explicitly verified thickness rule", value=False,
+        help="The uploaded contract may not apply to this IFC. Confirm applicability before enabling."
+    )
+    reference_thickness = 352.0
+    tolerance_mm = 0.0
+    scope_choice = "external"
+    name_contains = ""
+    rule_reference = ""
+    required_material_terms = ""
+    if enable_verified_rule:
+        st.warning("Rule applicability must be verified. 'All' is only for intentional synthetic tests.")
+        reference_thickness = st.number_input("Required thickness (mm)", min_value=0.01, value=352.0)
+        tolerance_mm = st.number_input("Permitted tolerance (mm)", min_value=0.0, value=0.0)
+        scope_label = st.selectbox("Which elements does this requirement apply to?", [
+            "External only (IsExternal=True)",
+            "Element name contains...", "All extracted elements (synthetic test only)"
+        ])
+        scope_choice = {
+            "External only (IsExternal=True)": "external",
+            "Element name contains...": "name_contains",
+            "All extracted elements (synthetic test only)": "all",
+        }[scope_label]
+        if scope_choice == "name_contains":
+            name_contains = st.text_input("Element-name substring", value="")
+        required_material_terms = st.text_input("Required material keywords (optional, comma separated)", value="")
+        rule_reference = st.text_input(
+            "Confirmed specification reference", value="Contract PDF, p.14: external masonry above DPC (verify applicability)"
+        )
     st.divider()
     run_audit = st.button(
         "🚀 Run Batch Compliance Audit", use_container_width=True
@@ -183,7 +217,8 @@ with col2:
                     " instances from IFC Model"
                 )
 
-                # --- GRAPH-RAG BACKEND SYNCHRONIZATION ---
+                graph_rows = []
+                # --- GRAPH-ENHANCED RETRIEVAL BACKEND ---
                 # Reuse the temp file already written above instead of
                 # writing the same IFC bytes to disk a second time.
                 with st.spinner(
@@ -193,12 +228,15 @@ with col2:
                         from ifc_to_neo4j import IFCGraphMapper
 
                         mapper = IFCGraphMapper()
-                        mapper.clear_database()
-                        mapper.upload_ifc_to_graph(tmp_file_path)
-
-                        st.sidebar.success(
-                            "📊 Neo4j Graph Synchronized Successfully!"
-                        )
+                        try:
+                            # Preserve other projects' graph data; no global DELETE.
+                            mapper.upload_ifc_to_graph(tmp_file_path)
+                            graph_rows = mapper.retrieve_element_neighborhood(
+                                [x["GlobalId"] for x in all_walls_data], limit=500
+                            )
+                        finally:
+                            mapper.close()
+                        st.sidebar.success(f"📊 Neo4j graph evidence retrieved for {len(graph_rows)} elements")
                     except Exception as g_err:
                         st.sidebar.warning(
                             f"⚠️ Neo4j Sync Bypassed: {g_err}"
@@ -215,7 +253,7 @@ with col2:
                 csv_buffer = io.StringIO()
                 csv_fields = [
                     "GlobalId", "Name", "Type", "Storey",
-                    "Width", "CavityWidth", "IsExternal", "Materials",
+                    "Width", "WidthSource", "CavityWidth", "IsExternal", "Materials",
                 ]
                 writer = csv.DictWriter(csv_buffer, fieldnames=csv_fields)
                 writer.writeheader()
@@ -237,15 +275,21 @@ with col2:
                     " accounted for."
                 )
 
-                # Group walls by Name and Type in Python to optimize prompt space
+                # Group ONLY identically measured and classified elements.
+                # Distinct widths/materials must never be silently averaged or hidden.
                 grouped_walls = defaultdict(list)
                 for w in all_walls_data:
-                    key = f"{w['Name']} ({w['Type']})"
+                    key = (
+                        w.get("Name"), w.get("Type"), str(w.get("Width")),
+                        str(w.get("CavityWidth")), w.get("IsExternal"),
+                        tuple(w.get("Materials", [])), w.get("Storey"),
+                    )
                     grouped_walls[key].append(w)
 
                 wall_summary_text = ""
-                for idx, (group_name, items) in enumerate(grouped_walls.items(), 1):
+                for idx, (signature, items) in enumerate(grouped_walls.items(), 1):
                     sample = items[0]
+                    group_name = f"{sample['Name']} ({sample['Type']})"
                     mats_str = (
                         ", ".join(sample["Materials"])
                         if sample["Materials"]
@@ -259,12 +303,39 @@ with col2:
                         f"CATEGORY #{idx}: {group_name}\n"
                         f"- Total Count: {len(items)}\n"
                         f"- Sample Global IDs: {sample_gids}\n"
-                        f"- Model Thickness: {sample['Width']} mm\n"
+                        f"- Model Thickness: {sample['Width']} mm (source: {sample.get('WidthSource','unknown')})\n"
                         f"- Cavity Width: {sample['CavityWidth']} mm\n"
                         f"- Is External: {sample['IsExternal']}\n"
                         f"- Storey: {sample['Storey']}\n"
                         f"- Materials: {mats_str}\n\n"
                     )
+
+                # Individual-element deterministic comparison, independent of LLM.
+                if enable_verified_rule:
+                    try:
+                        rule = AuditRule(
+                            thickness_mm=float(reference_thickness),
+                            tolerance_mm=float(tolerance_mm),
+                            scope=scope_choice, name_contains=name_contains,
+                            required_materials=tuple(x.strip() for x in required_material_terms.split(",") if x.strip()),
+                            source=rule_reference.strip(),
+                        )
+                        audited = audit_elements(all_walls_data, rule)
+                        st.subheader("🚦 Individual-element discrepancy matrix")
+                        st.caption("Each GlobalId is assessed separately. Colours are report priorities, not structural safety ratings.")
+                        audit_df = __import__("pandas").DataFrame(audited)
+                        st.write("Categories:", categories_summary(audited))
+                        st.dataframe(audit_df.style.applymap(lambda v: f"background-color: {issue_colour(v)}", subset=["IssueCategory"]),
+                                     use_container_width=True, hide_index=True)
+                        st.download_button(
+                            "⬇️ Download verified-rule audit results (CSV)",
+                            data=audit_df.to_csv(index=False).encode("utf-8-sig"),
+                            file_name="verified_rule_element_audit.csv", mime="text/csv",
+                        )
+                    except ValueError as rule_err:
+                        st.error(f"Rule invalid: {rule_err}")
+                else:
+                    st.info("For element-level PASS/FAIL results, enable a human-confirmed rule. Without verified applicability, no compliance claim is made.")
 
                 # UI Expander for Extracted Specs
                 with st.expander(
@@ -284,7 +355,9 @@ with col2:
                             "Your job is to cross-examine extracted IFC wall geometry against the provided Contract Specification PDF. "
                             "Generate a concise, well-structured compliance report. Use a compact lab-style matrix "
                             "to compare actual model values directly against contract requirements. "
-                            "If the provided contract text genuinely does not specify a value, say so plainly rather than guessing."
+                            "If the provided contract text genuinely does not specify a value, say so plainly rather than guessing. "
+                            "A contract and IFC model from different projects must not be presumed compatible. "
+                            "When project applicability is unverified, mark compliance as NOT ASSESSABLE instead of issuing approval or rejection."
                         )
 
                         # Gemini 2.5 Flash supports up to 65,536 output
@@ -319,6 +392,10 @@ with col2:
                             f"{targeted_spec_context}\n\n"
                             "--- EXTRACTED IFC MODEL WALL DATA ---\n"
                             f"{wall_summary_text}\n\n"
+                            "--- NEO4J RETRIEVED ELEMENT RELATIONSHIPS (GRAPH EVIDENCE) ---\n"
+                            f"{json.dumps(graph_rows[:150], ensure_ascii=False, default=str)}\n\n"
+                            "Use these graph records for grounding only. If graph evidence is empty, "
+                            "disclose that graph retrieval was unavailable; do not claim it was used.\n\n"
                             "INSTRUCTIONS TO PREVENT TRUNCATION:\n"
                             "- Maintain concise, clear analysis.\n"
                             "- Group similar wall types into consolidated rows in the Executive Compliance Matrix table.\n\n"
@@ -335,7 +412,7 @@ with col2:
                             "4. 🛠️ ACTIONABLE CORRECTION INSTRUCTIONS:\n"
                             "   Provide direct step-by-step guidance for the BIM Coordinator referencing key Global IDs.\n\n"
                             "5. 🏛️ FORMAL AUDIT VERDICT:\n"
-                            "   State the final approval state (APPROVED or REVISION REQUIRED) inside a Markdown blockquote card."
+                            "   State APPROVED or REVISION REQUIRED only if contract applicability and complete evidence are established; otherwise NOT ASSESSABLE. Use a Markdown blockquote."
                         )
 
                         try:
