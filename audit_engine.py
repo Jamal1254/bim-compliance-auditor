@@ -119,14 +119,20 @@ def audit_elements(elements, rule):
         if e.get("MeasurementQuality") == "CONFLICTING" and rule.metric == "Wall thickness":
             row.update(IssueCategory="REVIEW_REQUIRED", Explanation="IFC measurement sources disagree; resolve before comparison")
             rows.append(row); continue
+        missing_material = bool(rule.required_materials) and not materials
         if val is None:
-            row.update(IssueCategory="MISSING_GEOMETRY", Explanation=f"{rule.metric} not reliably extractable; not proof it is missing from BIM")
+            label = "MISSING_BOTH" if missing_material else "MISSING_GEOMETRY"
+            row.update(IssueCategory=label, Severity="Evidence gap",
+                       Explanation=f"{rule.metric} not reliably extractable" +
+                         (" and required material associations unavailable" if missing_material else "") +
+                         "; not evidence that the physical element is defective")
             rows.append(row); continue
         if "bounding-box" in source.casefold() or "name token" in source.casefold():
             row.update(IssueCategory="REVIEW_REQUIRED", Explanation="Approximate or name-derived geometry cannot prove dimension")
             rows.append(row); continue
         if rule.required_materials and not materials:
-            row.update(IssueCategory="MISSING_MATERIAL", Explanation="Material associations not available")
+            row.update(IssueCategory="MISSING_MATERIAL", Severity="Evidence gap",
+                       Explanation="Material associations not available; not proof of physical noncompliance")
             rows.append(row); continue
         delta = round(val - rule.thickness_mm, 4)
         geometry_fail = abs(delta) > rule.tolerance_mm + 1e-9
@@ -155,7 +161,7 @@ def issue_colour(category):
     return {
         "PASS":"#d5eddc", "GEOMETRY_MISMATCH":"#ffe2c2",
         "MATERIAL_MISMATCH":"#fff0bc", "MISMATCH_BOTH":"#f6c9c9",
-        "MISSING_GEOMETRY":"#fbe3bd", "MISSING_MATERIAL":"#fff0bc",
+        "MISSING_GEOMETRY":"#fbe3bd", "MISSING_MATERIAL":"#fff0bc", "MISSING_BOTH":"#f4bac4",
         "REVIEW_REQUIRED":"#e1dcfa", "SCOPE_UNVERIFIED":"#e1dcfa",
         "NOT_APPLICABLE":"#e6e6e6", "NOT_ASSESSABLE":"#e6e6e6",
     }.get(category, "#e6e6e6")
