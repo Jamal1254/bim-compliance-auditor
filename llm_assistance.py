@@ -1,5 +1,7 @@
 """Gemini proposes page-referenced PDF evidence; it never certifies compliance."""
 import hashlib
+import re
+import time
 from google import genai
 from google.genai import types
 
@@ -32,13 +34,65 @@ def prompt_sha256(prompt):
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
-def candidate_clauses(api_key, prompt, model="gemini-2.5-flash"):
+def _temporary_service_failure(exc):
+    """Retry only temporary provider-side failures; not invalid keys or quota limits."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code is not None:
+        try:
+            return int(code) in (502, 503, 504)
+        except (TypeError, ValueError):
+            pass
+    return bool(re.search(r"\b(?:502|503|504)\b", str(exc)))
+
+
+def candidate_clauses_with_status(api_key, prompt, model="gemini-2.5-flash", *,
+                                   client=None, sleeper=None):
+    """Return verified API invocation status while leaving BIM judgments untouched.
+
+    Retry a transient 5xx once on the preferred model, then try an alternate
+    Gemini model once. Authentication/quota errors fail immediately. The user
+    can still download all IFC and PDF evidence when every LLM attempt fails.
+    """
     if not api_key:
         raise ValueError("GEMINI_API_KEY secret is missing")
-    client = genai.Client(api_key=api_key)
-    config = types.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.0, max_output_tokens=2800)
-    response = client.models.generate_content(model=model, contents=prompt, config=config)
-    out = response.text or ""
-    if not out.strip():
-        return "No extractable candidate clause returned."
-    return out.strip()
+    client = client if client is not None else genai.Client(api_key=api_key)
+    sleeper = sleeper if sleeper is not None else time.sleep
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM, temperature=0.0, max_output_tokens=2800
+    )
+    alternate = "gemini-2.5-flash-lite"
+    models = [model] + ([alternate] if model != alternate else [])
+    attempts = []
+    last_error = None
+    for index, candidate in enumerate(models):
+        trials = 2 if index == 0 else 1
+        for trial in range(trials):
+            attempts.append(candidate)
+            try:
+                response = client.models.generate_content(
+                    model=candidate, contents=prompt, config=config
+                )
+                value = (getattr(response, "text", None) or "").strip()
+                if not value:
+                    return {"text": "No extractable candidate clause returned.",
+                            "model_used": candidate, "fallback_used": index > 0,
+                            "attempt_count": len(attempts), "status": "empty_response"}
+                return {"text": value, "model_used": candidate,
+                        "fallback_used": index > 0,
+                        "attempt_count": len(attempts), "status": "success"}
+            except Exception as exc:
+                if not _temporary_service_failure(exc):
+                    raise
+                last_error = exc
+                if index == 0 and trial == 0:
+                    sleeper(1)
+    raise RuntimeError(
+        "Gemini remains temporarily unavailable (502/503/504) after "
+        "a retry and one alternate-model attempt. IFC/PDF/Neo4j evidence "
+        "is unaffected. Please retry the AI analysis later."
+    ) from last_error
+
+
+def candidate_clauses(api_key, prompt, model="gemini-2.5-flash"):
+    """Backward-compatible interface for existing calls."""
+    return candidate_clauses_with_status(api_key, prompt, model)["text"]
