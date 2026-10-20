@@ -53,3 +53,19 @@ def test_repeatability_citation_overlap():
     assert summary["mean_page_citation_jaccard"]==0.3333
     assert summary["unsupported_page_citations"]==1
     assert "precision" not in summary
+
+def test_no_page_citations_is_not_perfect_repeatability():
+    r1=record_output("B",1,"model","model","h","No candidate requirements",{1,2})
+    r2=record_output("B",2,"model","model","h","No applicable evidence",{1,2})
+    summary=summarise_repeats([r1,r2])["B"]
+    assert summary["mean_page_citation_jaccard"] is None
+    assert summary["citation_similarity_interpretable"] is False
+    assert summary["runs_with_page_citations"]==0
+    assert summary["same_model_across_repeats"] is True
+
+def test_different_models_not_comparable_as_one_model():
+    a=record_output("A",1,"m","fallback-model","h","[PDF page 1]",{1})
+    b=record_output("A",2,"m","primary-model","h","No page provided",{1})
+    summary=summarise_repeats([a,b])["A"]
+    assert summary["same_model_across_repeats"] is False
+    assert summary["runs_with_page_citations"]==1
