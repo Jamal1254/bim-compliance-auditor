@@ -19,6 +19,9 @@ from spec_context import clause_candidates, candidates_text
 from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses_with_status
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
+from evidence_linking import link_pdf_evidence
+from prompt_repeatability import record_output, summarise_repeats
+from pypdf import PdfReader
 
 APP_VERSION = "Original-code supervisor fix 2026-10-20"
 st.set_page_config(page_title="BIM Evidence Auditor v4", page_icon="🏗️", layout="wide")
@@ -155,6 +158,9 @@ if run:
                 actual_classes = sorted({e["Type"] for e in elements})
                 candidates, keyword_hits = clause_candidates(b_pdf, actual_classes or component)
             rows = audit_elements(elements, rule)
+            with st.spinner("Linking uploaded IFC GlobalIds to PDF evidence..."):
+                element_links = link_pdf_evidence(b_pdf, elements)
+            pdf_page_count = len(PdfReader(io.BytesIO(b_pdf)).pages)
             graph, graph_count, graph_error = [], 0, ""
             if with_graph and elements:
                 with st.spinner("Neo4j: persisting and retrieving project-specific evidence..."):
@@ -181,6 +187,7 @@ if run:
             st.session_state["v4_report"] = {
                 "ifc_name": ifc_upload.name, "pdf_name": pdf_upload.name, "classes": actual_classes,
                 "elements": elements, "rows": rows, "candidates": candidates, "hit_count":keyword_hits,
+                "element_links": element_links, "pdf_page_count": pdf_page_count,
                 "graph":graph,"graph_count":graph_count,"graph_error":graph_error,
                 "gemini_text":llm_output,"gemini_error":llm_error,"gemini_model":llm_model if use_llm else None,
                 "gemini_model_used":llm_model_used,"gemini_fallback_used":llm_fallback_used,
@@ -214,6 +221,18 @@ if result:
         st.warning("User-verified rule comparison only. Other requirements and structural safety remain unassessed.")
     st.write("**Result categories:**", counts)
     table_and_export(rows)
+    st.subheader("🔗 Individual IFC-to-PDF candidate links")
+    links = result.get("element_links", [])
+    direct = sum(x["EvidenceLevel"]=="EXACT_GLOBALID_CANDIDATE" for x in links)
+    st.caption(f"{direct} exact-GlobalId PDF candidate(s), {len(links)-direct} type-level candidate(s). "
+               "All remain UNVERIFIED until source scope is independently confirmed.")
+    if links:
+        link_table = pd.DataFrame(links)
+        with st.expander(f"Review traceable PDF passages ({len(links)} candidates)"):
+            st.dataframe(link_table,hide_index=True,use_container_width=True)
+        st.download_button("⬇️ Download element-to-PDF candidate links (CSV)",
+                           link_table.to_csv(index=False).encode("utf-8-sig"),
+                           "element_pdf_candidate_links.csv","text/csv")
 
     sample = sample_from_current_model(rows, n=min(30,len(rows)), seed=result["sampling_seed"])
     sheet = evidence_review_worksheet(sample)
@@ -251,6 +270,37 @@ if result:
         if result.get("gemini_fallback_used"):
             st.warning("Primary Gemini model was temporarily unavailable; alternate model produced this candidate evidence. The actual model is recorded for repeatability.")
         st.text(result["gemini_text"] or "No response available")
+    if result["gemini_requested"]:
+        st.subheader("🔁 Supervisor experiment — Prompt A/B repeatability")
+        st.caption("Optional: 4 Gemini calls (A twice, B twice) using the SAME IFC/PDF/graph evidence. "
+                   "API usage charges may apply. Similarity is NOT ground-truth accuracy.")
+        if st.button("Run two repeats of BOTH prompts and save full outputs",key="repeatability"):
+            runs=[]
+            graph_context=json.dumps(result["graph"][:12],ensure_ascii=False,default=str)
+            pages=set(range(1,result["pdf_page_count"]+1))
+            for variant in PROMPT_VARIANTS:
+                p=prompt_for(", ".join(result["classes"]),candidates_text(result["candidates"]),variant,graph_context)
+                for repeat in (1,2):
+                    with st.spinner(f"Prompt {variant}, repeat {repeat}/2..."):
+                        try:
+                            response=candidate_clauses_with_status(secret("GEMINI_API_KEY"),p,result["gemini_model"])
+                            entry=record_output(variant,repeat,result["gemini_model"],response["model_used"],
+                                                prompt_sha256(p),response["text"],pages)
+                        except Exception as exc:
+                            entry=record_output(variant,repeat,result["gemini_model"],"",prompt_sha256(p),"",
+                                                pages,f"{type(exc).__name__}: {exc}")
+                        runs.append(entry)
+            st.session_state["ab_repeatability"]={
+                 "IFC_SHA256":result["IFC_SHA256"],"PDF_SHA256":result["PDF_SHA256"],
+                 "records":runs,"summary":summarise_repeats(runs)}
+        experiment=st.session_state.get("ab_repeatability")
+        if experiment and experiment["IFC_SHA256"]==result["IFC_SHA256"] and experiment["PDF_SHA256"]==result["PDF_SHA256"]:
+            st.json(experiment["summary"])
+            st.download_button("⬇️ Download A/B full repeated responses (JSON)",
+                 json.dumps(experiment,indent=2,ensure_ascii=False),
+                 "prompt_ab_repeatability_full.json","application/json")
+            st.caption("Independent reviewer ground truth is needed for match precision and recall.")
+
     metadata = {k: result[k] for k in ("version","created_utc","IFC_SHA256","PDF_SHA256","mode","classes",
                        "graph_requested","graph_count","graph_error","gemini_requested","gemini_model",
                        "prompt_variant","prompt_hash","gemini_error","sampling_seed",
