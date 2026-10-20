@@ -29,10 +29,18 @@ def summarise_repeats(records):
         for i in range(len(page_sets)):
             for j in range(i+1,len(page_sets)):
                 union=page_sets[i]|page_sets[j]
-                similarities.append(len(page_sets[i]&page_sets[j])/len(union) if union else 1.0)
+                # No citations in either response is MISSING EVIDENCE, not perfect overlap.
+                if union:
+                    similarities.append(len(page_sets[i] & page_sets[j]) / len(union))
+        models = {r.get("model_used") for r in valid if r.get("model_used")}
+        cited_runs = sum(bool(pages) for pages in page_sets)
         out[variant]={"attempted":len(items),"successful":len(valid),
                       "distinct_responses":len(hashes),
                       "identical_text_across_repeats":len(valid)>1 and len(hashes)==1,
+                      "models_used":sorted(models),
+                      "same_model_across_repeats":len(valid)>1 and len(models)==1,
+                      "runs_with_page_citations":cited_runs,
                       "mean_page_citation_jaccard":round(sum(similarities)/len(similarities),4) if similarities else None,
+                      "citation_similarity_interpretable":bool(similarities),
                       "unsupported_page_citations":sum(len(r["citations_not_in_pdf"]) for r in valid)}
     return out
