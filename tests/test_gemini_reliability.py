@@ -51,7 +51,7 @@ def test_fallback_503(monkeypatch):
     c=FakeClient([DummyError(503),DummyError(503),"fallback evidence"])
     r=llm.candidate_clauses_with_status("key","prompt",client=c,sleeper=lambda _:None)
     assert r["fallback_used"] and r["attempt_count"]==3
-    assert r["model_used"]=="gemini-2.5-flash-lite"
+    assert r["model_used"]=="gemini-3.5-flash-lite"
 
 def test_auth_not_retried(monkeypatch):
     llm=load_llm(monkeypatch)
