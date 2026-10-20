@@ -14,4 +14,4 @@ jobs:
           python-version: '3.11'
       - run: pip install pytest 'pypdf>=5,<7'
       - run: python -m compileall -q app.py audit_engine.py check_ifc_compliance.py spec_context.py ifc_to_neo4j.py llm_assistance.py validation_export.py
-      - run: pytest -q tests/test_v4_portability.py
+      - run: pytest -q tests/test_v4_portability.py tests/test_gemini_reliability.py
