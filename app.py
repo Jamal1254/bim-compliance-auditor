@@ -16,7 +16,7 @@ import streamlit as st
 from audit_engine import AuditRule, MEASUREMENT_TYPES, audit_elements, categories_summary, issue_colour
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from spec_context import clause_candidates, candidates_text
-from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses
+from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses_with_status
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 
@@ -163,6 +163,7 @@ if run:
                     except Exception as exc:
                         graph_error = f"{type(exc).__name__}: {exc}"
             llm_output, llm_error, prompt_hash = "", "", ""
+            llm_model_used, llm_fallback_used, llm_attempts = None, False, 0
             if use_llm:
                 excerpts = candidates_text(candidates)
                 selected_graph = json.dumps(graph[:12], ensure_ascii=False, default=str)
@@ -170,7 +171,11 @@ if run:
                 prompt_hash = prompt_sha256(prompt)
                 with st.spinner("Gemini: suggesting traceable clauses (no compliance verdict)..."):
                     try:
-                        llm_output = candidate_clauses(secret("GEMINI_API_KEY"), prompt, llm_model)
+                        llm_response = candidate_clauses_with_status(secret("GEMINI_API_KEY"), prompt, llm_model)
+                        llm_output = llm_response["text"]
+                        llm_model_used = llm_response["model_used"]
+                        llm_fallback_used = llm_response["fallback_used"]
+                        llm_attempts = llm_response["attempt_count"]
                     except Exception as exc:
                         llm_error = f"{type(exc).__name__}: {exc}"
             st.session_state["v4_report"] = {
@@ -178,6 +183,8 @@ if run:
                 "elements": elements, "rows": rows, "candidates": candidates, "hit_count":keyword_hits,
                 "graph":graph,"graph_count":graph_count,"graph_error":graph_error,
                 "gemini_text":llm_output,"gemini_error":llm_error,"gemini_model":llm_model if use_llm else None,
+                "gemini_model_used":llm_model_used,"gemini_fallback_used":llm_fallback_used,
+                "gemini_attempts":llm_attempts,
                 "prompt_variant":prompt_variant if use_llm else None,"prompt_hash":prompt_hash,
                 "IFC_SHA256":model_hash,"PDF_SHA256":pdf_hash,"mode":mode,"sampling_seed":int(seed),
                 "graph_requested":with_graph,"gemini_requested":use_llm,"version":APP_VERSION,
@@ -240,11 +247,14 @@ if result:
         st.error("Gemini request error: " + result["gemini_error"])
     if result["gemini_requested"]:
         st.subheader("🧠 Gemini-suggested PDF clauses — unverified")
-        st.caption(f"Model: {result['gemini_model']} | Variant: {result['prompt_variant']} | Prompt SHA-256: {result['prompt_hash']}")
+        st.caption(f"Requested model: {result['gemini_model']} | Actual model: {result.get('gemini_model_used') or 'unavailable'} | Variant: {result['prompt_variant']} | Prompt SHA-256: {result['prompt_hash']}")
+        if result.get("gemini_fallback_used"):
+            st.warning("Primary Gemini model was temporarily unavailable; alternate model produced this candidate evidence. The actual model is recorded for repeatability.")
         st.text(result["gemini_text"] or "No response available")
     metadata = {k: result[k] for k in ("version","created_utc","IFC_SHA256","PDF_SHA256","mode","classes",
                        "graph_requested","graph_count","graph_error","gemini_requested","gemini_model",
-                       "prompt_variant","prompt_hash","gemini_error","sampling_seed")}
+                       "prompt_variant","prompt_hash","gemini_error","sampling_seed",
+                       "gemini_model_used","gemini_fallback_used","gemini_attempts")}
     metadata["graph_retrieved_rows"] = len(result["graph"])
     metadata["gemini_output_available"] = bool(result["gemini_text"])
     st.download_button("⬇️ Research reproducibility metadata (JSON)",json.dumps(metadata,indent=2),
