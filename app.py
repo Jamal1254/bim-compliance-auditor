@@ -71,8 +71,12 @@ def table_and_export(rows):
     categories = sorted(data["IssueCategory"].dropna().unique().tolist())
     selected = st.multiselect("Filter by audit category", categories, default=categories)
     visible = data[data["IssueCategory"].isin(selected)] if selected else data
+    if "ReviewPriority" in visible.columns:
+        priorities = sorted(visible["ReviewPriority"].dropna().unique().tolist())
+        selected_priorities = st.multiselect("Filter by review priority (not safety severity)", priorities, default=priorities)
+        visible = visible[visible["ReviewPriority"].isin(selected_priorities)] if selected_priorities else visible
     cols = ["GlobalId", "ElementName", "IFCType", "Measurement", "MeasuredValue_mm", "MeasurementSource",
-            "RequiredThickness_mm", "ThicknessDifference_mm", "IssueCategory", "EvidenceReference", "Explanation"]
+            "RequiredThickness_mm", "ThicknessDifference_mm", "IssueCategory", "ReviewPriority", "EvidenceReference", "Explanation"]
     st.dataframe(visible[cols].style.map(lambda v: f"background-color: {issue_colour(str(v))}", subset=["IssueCategory"]),
                  use_container_width=True, hide_index=True, height=420)
     one, two = st.columns(2)
