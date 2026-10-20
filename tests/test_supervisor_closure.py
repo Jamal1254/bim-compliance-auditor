@@ -22,6 +22,7 @@ def test_six_observation_categories():
         output=audit_elements([elem],rule)[0]
         assert output["IssueCategory"]==expected
         assert output["ComparisonMode"]=="CONTROLLED_TEST"
+        assert output["ReviewPriority"] in {"High","Medium","None"}
 
 def test_wrong_element_out_of_scope():
     wall={"GlobalId":"wall","Type":"IfcWall","Width":100,"Materials":["Concrete"]}
