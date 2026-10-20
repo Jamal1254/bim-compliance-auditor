@@ -1,7 +1,7 @@
 name: General IFC/PDF logic tests
 on:
   push:
-    branches: [supervisor-revision-v4-generic-2026-10-19]
+    branches: [original-code-supervisor-fix-2026-10-20]
   pull_request:
     paths: ['**/*.py', 'requirements.txt']
 jobs:
