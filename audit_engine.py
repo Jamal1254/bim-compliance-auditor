@@ -146,7 +146,19 @@ def audit_elements(elements, rule):
             ("Text-token material test included." if rule.required_materials else "Materials not compared.")
         )
         rows.append(row)
+    for record in rows:
+        record["ReviewPriority"] = REVIEW_PRIORITY.get(record["IssueCategory"], "Review")
     return rows
+
+
+# Review priorities guide investigation; they are NOT structural/safety severity.
+REVIEW_PRIORITY = {
+    "MISMATCH_BOTH":"High", "MISSING_BOTH":"High",
+    "GEOMETRY_MISMATCH":"Medium", "MISSING_GEOMETRY":"Medium",
+    "MATERIAL_MISMATCH":"Medium", "MISSING_MATERIAL":"Medium",
+    "REVIEW_REQUIRED":"Review", "SCOPE_UNVERIFIED":"Review",
+    "PASS":"None", "NOT_APPLICABLE":"Not rated", "NOT_ASSESSABLE":"Not rated",
+}
 
 
 def categories_summary(rows):
