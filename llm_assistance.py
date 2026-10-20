@@ -60,7 +60,7 @@ def candidate_clauses_with_status(api_key, prompt, model="gemini-2.5-flash", *,
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM, temperature=0.0, max_output_tokens=2800
     )
-    alternate = "gemini-2.5-flash-lite"
+    alternate = "gemini-3.5-flash-lite"
     models = [model] + ([alternate] if model != alternate else [])
     attempts = []
     last_error = None
