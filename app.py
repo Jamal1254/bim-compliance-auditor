@@ -20,7 +20,7 @@ from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256
 from llm_gateway import run_evidence_model, PROVIDER_MODELS, SECRETS
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
-from link_validation import link_review_worksheet, evaluate_link_review
+from link_validation import link_review_worksheet, evaluate_link_review, wall_validation_sample
 from controlled_demo import synthetic_classification_examples
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
@@ -187,7 +187,9 @@ if run:
                 all_rows = audit_elements(all_elements, None)
                 mixed_sample = sample_from_current_model(all_rows, n=min(30,len(all_rows)),seed=int(seed))
                 mixed_worksheet = evidence_review_worksheet(mixed_sample)
-                top_candidate_review = link_review_worksheet(mixed_sample,ranked_links)
+                wall_cohort = wall_validation_sample(all_rows, ranked_links, n=30, seed=int(seed))
+                top_candidate_review = link_review_worksheet(wall_cohort, ranked_links)
+                mixed_candidate_review = link_review_worksheet(mixed_sample,ranked_links)
             rows = audit_elements(elements, rule)
             with st.spinner("Linking uploaded IFC GlobalIds to PDF evidence..."):
                 element_links = link_pdf_evidence(b_pdf, elements)
@@ -228,6 +230,7 @@ if run:
                 "element_links": element_links, "pdf_page_count": pdf_page_count,
                 "assembly_reqs": assembly_reqs, "ranked_links": ranked_links,
                 "mixed_worksheet": mixed_worksheet, "link_review_worksheet": top_candidate_review,
+                "mixed_link_review": mixed_candidate_review,
                 "graph":graph,"graph_count":graph_count,"graph_error":graph_error,
                 "gemini_text":llm_output,"gemini_error":llm_error,
                 "llm_provider":llm_provider if use_llm else None,
@@ -475,7 +478,7 @@ if result:
                "All contractual truth fields are blank pending an independent reviewer.")
     st.download_button("⬇️ Download current-model ground-truth worksheet (CSV)",
                        validation_csv(sheet).encode("utf-8-sig"), "ground_truth_for_uploaded_ifc.csv","text/csv")
-    st.subheader("📋 Independent 30-element linkage validation")
+    st.subheader("📋 Independent wall-link validation and mixed-class coverage")
     mixed_rows = result.get("mixed_worksheet", [])
     if mixed_rows:
         mixed_df = pd.DataFrame(mixed_rows)
@@ -486,28 +489,36 @@ if result:
     link_sample_rows = result.get("link_review_worksheet", [])
     if link_sample_rows:
         link_sample_df = pd.DataFrame(link_sample_rows)
-        st.caption("A top PDF clause candidate is attached to each sampled IFC GlobalId where one was retrieved. NO automatic ground truth. For non-wall element classes the current wall-only retrieval is incomplete.")
-        st.dataframe(link_sample_df[["GlobalId","SampleIFCType",
+        st.caption("Primary 30-WALL evidence-stratified cohort: retrieved and non-retrieved wall candidates are sampled separately to test missed links. This is NOT population-random; original project-contract applicability and the complete relevant clause IDs must be independently reviewed. The mixed-class sample above is for interoperability coverage, not wall-link F1.")
+        st.write("**Wall validation strata:**",link_sample_df["SamplingStratum"].value_counts().to_dict())
+        st.dataframe(link_sample_df[["GlobalId","SampleIFCType","SamplingStratum",
                         "CandidateRequirementID","CandidatePDFPage",
                         "PredictedTopCandidate","CandidateStatus"]],
                      hide_index=True,use_container_width=True)
         st.download_button("⬇️ Download top-1 element-to-clause review sheet (CSV)",
                            validation_csv(link_sample_rows).encode("utf-8-sig"),
-                           "element_clause_top1_truth_BLANK.csv","text/csv")
+                           "wall_link_top1_truth_BLANK.csv","text/csv")
         reviewed_links = st.file_uploader("Upload independently labelled top-1 review sheet (optional)",type=["csv"],key="reviewed_links")
         if reviewed_links is not None:
             try:
                 reviewed_table=pd.read_csv(io.BytesIO(reviewed_links.getvalue()),dtype=str).fillna("")
                 expected=set(link_sample_df["GlobalId"])
+                if set(reviewed_table.columns) != set(link_sample_df.columns):
+                    raise ValueError("Reviewed worksheet must preserve every original column.")
                 actual=list(reviewed_table["GlobalId"])
                 if len(actual)!=len(set(actual)) or set(actual)!=expected:
-                    raise ValueError("The reviewed GlobalIds must match the 30 sampled IFC elements.")
-                expected_predictions=dict(zip(link_sample_df["GlobalId"],link_sample_df["PredictedTopCandidate"]))
-                for row in reviewed_table.to_dict("records"):
-                    if str(row["PredictedTopCandidate"]) != str(expected_predictions[row["GlobalId"]]):
-                        raise ValueError("Predictions were edited. Only independent ground-truth fields may change.")
+                    raise ValueError("Reviewed GlobalIds must match the frozen wall validation cohort.")
+                # Only human review fields may be changed. A reviewer cannot alter
+                # source clauses, candidate IDs, model measurements or predictions.
+                editable={"verified_document_applies","ground_truth_applicable_requirement_ids",
+                          "ground_truth_property_comparable","ground_truth_mismatch","reviewer_notes"}
+                original=link_sample_df.set_index("GlobalId").fillna("")
+                checked=reviewed_table.set_index("GlobalId").fillna("")
+                for column in set(original.columns)-editable:
+                    if (original[column].astype(str).sort_index() != checked[column].astype(str).sort_index()).any():
+                        raise ValueError(f"Frozen evidence/prediction column was modified: {column}")
                 st.json(evaluate_link_review(reviewed_table.to_dict("records")))
-                st.caption("Statistics measure this sample's TOP-1 retrieval, not contract compliance or full-specification recall.")
+                st.caption("Link-event statistics: a wrong predicted clause when another applicable clause exists counts both an incorrect link (FP) and a missed correct link (FN). These are NOT conventional mutually exclusive element classifications; no real project accuracy is available without independent review.")
             except Exception as exc:
                 st.error(f"Linkage evaluation error: {exc}")
         else:
@@ -586,6 +597,8 @@ if result:
     metadata["element_specific_unverified_pairs"] = len(result.get("ranked_links", []))
     metadata["mixed_class_sample_size"] = len(result.get("mixed_worksheet", []))
     metadata["top_candidate_review_size"] = len(result.get("link_review_worksheet", []))
+    metadata["wall_validation_design"] = "evidence-stratified selected/unselected walls"
+    metadata["mixed_class_candidate_review_size"] = len(result.get("mixed_link_review", []))
     metadata["independent_link_ground_truth_available"] = False
     metadata["graph_selection_strategy"] = "PDF-relevance-first with diverse IFC fill (40 cap)"
     metadata["ranked_pair_compliance_verdict"] = "NOT_ASSESSABLE"
