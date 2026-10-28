@@ -514,6 +514,11 @@ if result:
                        "prompt_variant","prompt_hash","gemini_error","sampling_seed",
                        "gemini_model_used","gemini_fallback_used","gemini_attempts")}
     metadata["graph_retrieved_rows"] = len(result["graph"])
+    metadata["full_pdf_assembly_candidates"] = len(assembly_rows)
+    metadata["full_pdf_assembly_pages"] = sorted({int(x["PDFPage"]) for x in assembly_rows})
+    metadata["assembly_contractual_scope_verified"] = False
+    metadata["numerical_proximity_is_compliance"] = False
+
     metadata["wall_screening_counts"] = (
         pd.DataFrame(screening)["ScreeningStatus"].value_counts().to_dict()
         if screening else {}
