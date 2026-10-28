@@ -23,6 +23,7 @@ from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
 from assembly_evidence import numerical_wall_assembly_neighbours
+from semantic_links import rank_element_requirement_candidates, select_graph_elements, format_grounded_link_context
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
 
@@ -55,13 +56,20 @@ def extract_file(data, query):
             except OSError: pass
 
 
-def graph_lookup(model_hash, rows):
+def graph_lookup(model_hash, rows, ranked_links=()):
     from ifc_to_neo4j import IFCGraphMapper
     mapper = IFCGraphMapper()
     try:
-        limited = rows[:40]  # free-tier-friendly bounded graph subset; stable GlobalId ordering
+        # Rank by PDF-to-IFC relevance first, then fill diverse IFC evidence.
+        # Bound free-tier calls without hiding which elements were selected.
+        limited = select_graph_elements(rows, ranked_links, cap=40)
         uploaded = mapper.upload_elements(model_hash, limited)
-        return mapper.retrieve_element_neighborhood([r["GlobalId"] for r in limited], model_hash, limit=40), uploaded
+        found = mapper.retrieve_element_neighborhood(
+            [r["GlobalId"] for r in limited], model_hash, limit=40)
+        by_id = {str(g.get("globalId")): g for g in found}
+        # Neo4j ORDER BY GlobalId does not represent retrieval relevance.
+        ordered = [by_id[e["GlobalId"]] for e in limited if e["GlobalId"] in by_id]
+        return ordered, uploaded
     finally:
         mapper.close()
 
@@ -167,6 +175,9 @@ if run:
                 elements = extract_file(b_ifc, component)
                 actual_classes = sorted({e["Type"] for e in elements})
                 candidates, keyword_hits = clause_candidates(b_pdf, actual_classes or component)
+                assembly_reqs = find_wall_assembly_specifications(b_pdf)
+                ranked_links = rank_element_requirement_candidates(
+                    elements, assembly_reqs, max_pairs=80)
             rows = audit_elements(elements, rule)
             with st.spinner("Linking uploaded IFC GlobalIds to PDF evidence..."):
                 element_links = link_pdf_evidence(b_pdf, elements)
@@ -175,7 +186,7 @@ if run:
             if with_graph and elements:
                 with st.spinner("Neo4j: persisting and retrieving project-specific evidence..."):
                     try:
-                        graph, graph_count = graph_lookup(model_hash, elements)
+                        graph, graph_count = graph_lookup(model_hash, elements, ranked_links)
                     except Exception as exc:
                         graph_error = f"{type(exc).__name__}: {exc}"
             llm_output, llm_error, prompt_hash = "", "", ""
@@ -188,7 +199,9 @@ if run:
                 ))[:25]
                 excerpts = candidates_text(ai_candidates)
                 selected_graph = json.dumps(graph[:8], ensure_ascii=False, default=str)
-                prompt = prompt_for(", ".join(actual_classes), excerpts, prompt_variant, selected_graph)
+                anchored = format_grounded_link_context(ranked_links, graph, max_links=8)
+                prompt = prompt_for(", ".join(actual_classes), excerpts, prompt_variant,
+                    selected_graph + "\nPDF-to-specific-GlobalId candidate evidence (unverified):\n" + anchored)
                 prompt_hash = prompt_sha256(prompt)
                 with st.spinner("Gemini: suggesting traceable clauses (no compliance verdict)..."):
                     try:
@@ -203,6 +216,7 @@ if run:
                 "ifc_name": ifc_upload.name, "pdf_name": pdf_upload.name, "classes": actual_classes,
                 "elements": elements, "rows": rows, "candidates": candidates, "hit_count":keyword_hits,
                 "element_links": element_links, "pdf_page_count": pdf_page_count,
+                "assembly_reqs": assembly_reqs, "ranked_links": ranked_links,
                 "graph":graph,"graph_count":graph_count,"graph_error":graph_error,
                 "gemini_text":llm_output,"gemini_error":llm_error,"gemini_model":llm_model if use_llm else None,
                 "gemini_model_used":llm_model_used,"gemini_fallback_used":llm_fallback_used,
@@ -238,11 +252,7 @@ if result:
     table_and_export(rows)
     st.subheader("🏗️ Assembly requirements vs observed wall thickness — evidence only")
     st.caption("Entire PDF is searched automatically. No Gemini or Neo4j call. Numeric similarity is NOT contractual applicability and the 10 mm discovery window is NOT a permitted tolerance.")
-    try:
-        assembly_rows = find_wall_assembly_specifications(pdf_upload.getvalue())
-    except Exception as exc:
-        assembly_rows = []
-        st.error(f"Could not read overall cavity-wall assembly references: {type(exc).__name__}: {exc}")
+    assembly_rows = result.get("assembly_reqs", [])
     if assembly_rows:
         st.write(f"**{len(assembly_rows)} potential overall cavity-wall/facing-masonry assembly references found in the full PDF.**")
         assembly_df = pd.DataFrame(assembly_rows)
@@ -272,6 +282,23 @@ if result:
         st.warning("The PDF describes a wall ASSEMBLY. The model's wall width might describe a single MATERIAL LAYER. Confirm the original project agreement, component composition, wall location and application conditions before any contractual PASS/FAIL.")
     else:
         st.info("No explicit overall cavity-wall assembly phrase found; any numeric rule remains unverified.")
+
+    st.subheader("🎯 Element-specific PDF-to-IFC candidates (ranked, unverified)")
+    st.caption("Each candidate contains an actual IFC GlobalId, PDF page, contextual reasons, IFC materials/storey and explicit uncertainty. Ranking helps retrieval, NOT compliance classification. Neo4j is queried for relevant selected elements, not simply the first 40.")
+    ranked_pairs = result.get("ranked_links", [])
+    if ranked_pairs:
+        ranked_df = pd.DataFrame(ranked_pairs)
+        st.write("**Source-to-element screening categories:**", ranked_df["ScreeningStatus"].value_counts().to_dict())
+        st.dataframe(ranked_df[[
+            "PDFPage","RequirementID","GlobalId","ElementName","ObservedThickness_mm",
+            "PDFNominalAssembly_mm","RankScore","ScreeningStatus","Reasons",
+        ]], hide_index=True, use_container_width=True, height=320)
+        st.download_button("⬇️ Download element-specific ranked source links (CSV)",
+                           ranked_df.to_csv(index=False).encode("utf-8-sig"),
+                           "element_specific_ranked_links_UNVERIFIED.csv","text/csv")
+        st.warning("A ranked IFC/PDF pair remains NOT_ASSESSABLE until contract applicability, wall build-up, DPC/storey scope and tolerances are independently verified.")
+    else:
+        st.info("No explicit assembly requirements and element candidates found in this PDF/model pair.")
 
     st.subheader("🔗 Individual IFC-to-PDF candidate links")
     links = result.get("element_links", [])
@@ -462,7 +489,7 @@ if result:
         st.error("Neo4j connection/query error: " + result["graph_error"])
     if result["graph_requested"]:
         st.caption(f"Neo4j graph elements uploaded: {result['graph_count']}; neighbours retrieved: {len(result['graph'])}. "
-                   "For free-tier testing, only the first 40 extracted elements are graphed; full IFC evidence remains available.")
+                   "For free-tier testing, at most 40 IFC elements are selected by source relevance then diversity. Full IFC evidence remains available.")
     if result["graph"]:
         with st.expander(f"🕸️ Neo4j evidence from this IFC hash ({len(result['graph'])} records)"):
             st.dataframe(pd.DataFrame(result["graph"]),hide_index=True,use_container_width=True)
@@ -481,6 +508,7 @@ if result:
         if st.button("Run two repeats of BOTH prompts and save full outputs",key="repeatability"):
             runs=[]
             graph_context=json.dumps(result["graph"][:8],ensure_ascii=False,default=str)
+            graph_context += "\nUnverified element-specific candidate pairs:\n" + format_grounded_link_context(result.get("ranked_links", []),result["graph"],max_links=8)
             pages=set(range(1,result["pdf_page_count"]+1))
             for variant in PROMPT_VARIANTS:
                 relevant = sorted(result["candidates"], key=lambda c: (
@@ -514,6 +542,9 @@ if result:
                        "prompt_variant","prompt_hash","gemini_error","sampling_seed",
                        "gemini_model_used","gemini_fallback_used","gemini_attempts")}
     metadata["graph_retrieved_rows"] = len(result["graph"])
+    metadata["element_specific_unverified_pairs"] = len(result.get("ranked_links", []))
+    metadata["graph_selection_strategy"] = "PDF-relevance-first with diverse IFC fill (40 cap)"
+    metadata["ranked_pair_compliance_verdict"] = "NOT_ASSESSABLE"
     metadata["full_pdf_assembly_candidates"] = len(assembly_rows)
     metadata["full_pdf_assembly_pages"] = sorted({int(x["PDFPage"]) for x in assembly_rows})
     metadata["assembly_contractual_scope_verified"] = False
