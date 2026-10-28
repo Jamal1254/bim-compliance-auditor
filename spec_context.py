@@ -99,3 +99,75 @@ def clause_candidates(pdf_bytes, component="Wall", max_chars=16000):
 
 def candidates_text(candidates):
     return "\n\n".join(f"[PDF page {x['Page']}; candidates: {', '.join(x['Types'])}] {x['Text']}" for x in candidates)
+
+
+def adjacent_pdf_context(pdf_bytes, page_number, radius=2, per_page_limit=6500):
+    """Read the original and adjacent PDF pages, preserving 1-based page numbers.
+
+    This is for human scope verification, not an automatic contract match.
+    A paragraph can depend on limitations on earlier pages.
+    """
+    reader = PdfReader(BytesIO(pdf_bytes))
+    page_number = int(page_number)
+    if page_number < 1 or page_number > len(reader.pages):
+        raise ValueError("PDF page is outside the uploaded document.")
+    radius = max(0, min(3, int(radius)))
+    sections = []
+    for index in range(max(0, page_number - radius - 1),
+                       min(len(reader.pages), page_number + radius)):
+        text = (reader.pages[index].extract_text() or "").strip()
+        sections.append(f"PDF page {index+1} (1-based upload page)\n"
+                        + (text[:per_page_limit] if text else "[No extractable text]"))
+    return "\n\n========== NEXT PAGE ==========\n\n".join(sections)
+
+
+_ASSEMBLY_REGEX = re.compile(
+    r"(?<![\w.])(?P<value>\d+(?:[.,]\d+)?)\s*mm\s+"
+    r"(?P<kind>cavity\s+wall\s+construction|facing\s+masonry|"
+    r"(?:(?:[\w/-]+\s+){0,4})"
+    r"(?:wall(?:\s+(?:assembly|construction|system|build[\s-]?up))?"
+    r"|partition|curtain\s+wall|masonry))\b",
+    re.IGNORECASE,
+)
+
+
+def find_wall_assembly_specifications(pdf_bytes, max_results=60):
+    """Find candidate wall/partition assembly dimensions across the full PDF.
+
+    This is broad discovery across wall, partition, curtain-wall, masonry and
+    related assembly phrases; it is not a complete standards parser. Return
+    source pages and contextual lines for human review. Candidates are NOT
+    applicable rules, and assembly totals are not automatically comparable
+    with one IFC layer or with every wall in a model.
+    """
+    reader = PdfReader(BytesIO(pdf_bytes))
+    results = []
+    for page_index, page in enumerate(reader.pages, 1):
+        lines = [re.sub(r"\s+", " ", line).strip()
+                 for line in (page.extract_text() or "").splitlines()]
+        lines = [line for line in lines if line]
+        for line_index, line in enumerate(lines):
+            match = _ASSEMBLY_REGEX.search(line)
+            if match is None:
+                continue
+            value = float(match.group("value").replace(",", "."))
+            if not 0 < value <= 2000:
+                continue
+            start = max(0, line_index - 8)
+            finish = min(len(lines), line_index + 7)
+            evidence = " ".join(lines[start:finish])
+            results.append({
+                "PDFPage": page_index,
+                "AssemblyThickness_mm": value,
+                "AssemblyKind": match.group("kind").lower(),
+                "QuotedLine": line,
+                "SurroundingText": evidence[:2600],
+                "ComparisonMeaning": "NOMINAL_ASSEMBLY_NOT_AUTOMATIC_MINIMUM",
+                "ContractualApplicability": "NOT_VERIFIED",
+                "IFCElementLink": "NOT_VERIFIED",
+            })
+            if len(results) >= max_results:
+                return results
+    return results
+
+

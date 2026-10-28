@@ -133,6 +133,36 @@ def _materials(element, scale):
     return names, sums, cavity
 
 
+
+def _material_layers(element, scale):
+    """Return structural IFC layer records, not estimates from wall names.
+
+    For a multi-layer cavity wall this is the evidence needed to check each
+    leaf independently. A generic single material is NOT a three-part
+    cavity-wall construction. Layer sequence is preserved as authored, but
+    does not prove which face is external without a verified orientation.
+    """
+    material = ifcopenshell.util.element.get_material(
+        element, should_skip_usage=False)
+    if material is None:
+        return []
+    layer_set = getattr(material, "ForLayerSet", None)
+    if layer_set is None and material.is_a("IfcMaterialLayerSet"):
+        layer_set = material
+    if layer_set is None:
+        return []
+    records = []
+    for i, layer in enumerate(getattr(layer_set, "MaterialLayers", ()) or (), 1):
+        name = getattr(getattr(layer, "Material", None), "Name", None) or "Unnamed material"
+        records.append({
+            "LayerIndex": i,
+            "MaterialName": str(name),
+            "Thickness_mm": _length(getattr(layer, "LayerThickness", None), scale),
+            "EvidenceSource": "IfcMaterialLayerSet.MaterialLayers",
+        })
+    return records
+
+
 def _property_evidence(element, scale):
     psets = ifcopenshell.util.element.get_psets(element) or {}
     values = defaultdict(list)
@@ -194,6 +224,11 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="All model element
             materials, layer_candidates, cavity = [], [], None
             warnings.append("Material association extraction failed: " + type(ex).__name__)
         try:
+            layer_details = _material_layers(el, scale) if el.is_a("IfcWall") else []
+        except Exception as ex:
+            layer_details = []
+            warnings.append("Structured wall material layers unavailable: " + type(ex).__name__)
+        try:
             props, external = _property_evidence(el, scale)
         except Exception as ex:
             props, external = {}, None
@@ -222,7 +257,8 @@ def extract_all_ifc_wall_dimensions(file_path, search_keyword="All model element
             "IsExternal": external, "Width": width, "WidthSource": source,
             "MeasurementQuality": quality, "ThicknessCandidates": sources,
             "CavityWidth": cavity if cavity is not None else "Not established",
-            "Materials": materials, "Dimensions_mm": dimensions,
+            "Materials": materials, "MaterialLayers": layer_details,
+            "Dimensions_mm": dimensions,
             "IFCSchema": model.schema, "IFC_mm_per_length_unit": scale,
             "ExtractionWarnings": "; ".join(warnings),
         })

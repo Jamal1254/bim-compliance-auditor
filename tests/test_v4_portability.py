@@ -88,6 +88,8 @@ def test_two_schema_imperial_and_metric_units(models):
     assert a[0]['Type']=='IfcBeam'  # sorted by independent GlobalIds
     aw=next(e for e in a if e['Type']=='IfcWall')
     assert aw['Width']==228.6 and aw['IFCSchema']=='IFC2X3'
+    assert [x["Thickness_mm"] for x in aw["MaterialLayers"]]==[152.4,76.2]
+    assert [x["MaterialName"] for x in aw["MaterialLayers"]]==["brick","insulation"]
     door=next(e for e in a if e['Type']=='IfcDoor')
     assert door['Dimensions_mm']['OverallWidth_mm']==914.4
     bw=next(e for e in b if e['Type']=='IfcWallStandardCase')

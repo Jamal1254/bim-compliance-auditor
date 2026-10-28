@@ -2,8 +2,6 @@
 import hashlib
 import re
 import time
-from google import genai
-from google.genai import types
 
 PROMPT_VARIANTS = {
     "A - strict evidence": "For each represented IFC class, propose relevant requirements. Quote only short evidence excerpts and include their precise PDF page markers. State any scope restrictions; return 'no applicable clause found' when uncertain.",
@@ -15,7 +13,19 @@ SYSTEM = (
     "The IFC and PDF may be unrelated projects. Do NOT output PASS, FAIL, compliance approval or design changes. "
     "Return a short evidence list (element class, possible clause, numeric value if stated, units, page, "
     "scope qualifiers, why it may be relevant, missing information). "
-    "Do not confuse wall thickness with beam width, curtain-wall panel width, or storey height. "
+    "Do not confuse wall thickness with beam width, curtain-wall panel width, storey height, or building-height thresholds such as 18 m. "
+    "Internal/external status does NOT establish whether a wall is load-bearing. "
+    "A referenced table without its actual numeric values is NOT a known numeric thickness requirement. "
+    "A numeric dimension is only a wall thickness if the adjacent source text explicitly identifies it as such. "
+    "A dimension of a wall LEAF, cavity, coating, insulation material, sheeting, "
+    "or a minimum material thickness is NOT the total thickness of a wall. "
+    "When a snippet refers to another paragraph, table or diagram, mark its "
+    "full applicability conditions as MISSING, even if the excerpt contains a number. "
+    "Requirements may apply only to particular building heights, uses, "
+    "construction types, structural roles, jurisdictions, or dates. "
+    "Do not say 'Missing Information: None' merely because a value and unit are present. "
+    "Never claim a regulatory guidance document is a particular project's contract "
+    "or that its clauses govern a specific IFC element without supporting evidence. "
     "If the extracts are weak or unrelated, explicitly say the evidence is insufficient."
 )
 
@@ -55,7 +65,12 @@ def candidate_clauses_with_status(api_key, prompt, model="gemini-2.5-flash", *,
     """
     if not api_key:
         raise ValueError("GEMINI_API_KEY secret is missing")
-    client = client if client is not None else genai.Client(api_key=api_key)
+    # Import vendor SDK only when the Gemini adapter is actually invoked.
+    # This also permits OpenAI/offline validation without google-genai installed.
+    if client is None:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+    from google.genai import types
     sleeper = sleeper if sleeper is not None else time.sleep
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM, temperature=0.0, max_output_tokens=2800
