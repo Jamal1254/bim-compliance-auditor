@@ -15,7 +15,10 @@ SYSTEM = (
     "The IFC and PDF may be unrelated projects. Do NOT output PASS, FAIL, compliance approval or design changes. "
     "Return a short evidence list (element class, possible clause, numeric value if stated, units, page, "
     "scope qualifiers, why it may be relevant, missing information). "
-    "Do not confuse wall thickness with beam width, curtain-wall panel width, or storey height. "
+    "Do not confuse wall thickness with beam width, curtain-wall panel width, storey height, or building-height thresholds such as 18 m. "
+    "Internal/external status does NOT establish whether a wall is load-bearing. "
+    "A referenced table without its actual numeric values is NOT a known numeric thickness requirement. "
+    "A numeric dimension is only a wall thickness if the adjacent source text explicitly identifies it as such. "
     "If the extracts are weak or unrelated, explicitly say the evidence is insufficient."
 )
 
