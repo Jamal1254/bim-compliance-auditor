@@ -123,17 +123,22 @@ def adjacent_pdf_context(pdf_bytes, page_number, radius=2, per_page_limit=6500):
 
 _ASSEMBLY_REGEX = re.compile(
     r"(?<![\w.])(?P<value>\d+(?:[.,]\d+)?)\s*mm\s+"
-    r"(?P<kind>cavity\s+wall\s+construction|facing\s+masonry)\b",
+    r"(?P<kind>cavity\s+wall\s+construction|facing\s+masonry|"
+    r"(?:(?:[\w/-]+\s+){0,4})"
+    r"(?:wall(?:\s+(?:assembly|construction|system|build[\s-]?up))?"
+    r"|partition|curtain\s+wall|masonry))\b",
     re.IGNORECASE,
 )
 
 
 def find_wall_assembly_specifications(pdf_bytes, max_results=60):
-    """Find explicit assembly-level specifications across the entire PDF.
+    """Find candidate wall/partition assembly dimensions across the full PDF.
 
-    Return source pages and contextual lines. These are unverified clauses,
-    NOT rules applicable to individual IFC elements. A specified masonry
-    assembly is not automatically comparable to a single IFC material layer.
+    This is broad discovery across wall, partition, curtain-wall, masonry and
+    related assembly phrases; it is not a complete standards parser. Return
+    source pages and contextual lines for human review. Candidates are NOT
+    applicable rules, and assembly totals are not automatically comparable
+    with one IFC layer or with every wall in a model.
     """
     reader = PdfReader(BytesIO(pdf_bytes))
     results = []
@@ -166,33 +171,3 @@ def find_wall_assembly_specifications(pdf_bytes, max_results=60):
     return results
 
 
-def find_ad_a_2c8_cavity_guidance(pdf_bytes):
-    """Locate source text for a controlled England AD A cavity-wall experiment.
-
-    The combined document can have PDF page numbers unlike the printed page
-    number. Source text must explicitly contain clause 2C8, 90 mm leaves, and
-    50 mm cavity. This does not confirm jurisdiction, project contract, or
-    the many additional requirements in Section 2C.
-    """
-    pages=PdfReader(BytesIO(pdf_bytes)).pages
-    found=[]
-    for index,page in enumerate(pages,1):
-        raw=page.extract_text() or ""
-        cleaned=re.sub(r"\s+"," ",raw).strip()
-        if not re.search(r"\b2C8\b", cleaned, re.I):
-            continue
-        if not (re.search(r"\b(?:leaves?|leaf)\b.{0,130}\b90\s*mm\b",cleaned,re.I)
-                and re.search(r"\b(?:cavit(?:y|ies))\b.{0,110}\b50\s*mm\b",cleaned,re.I)):
-            continue
-        loc=re.search(r"\b2C8\b",cleaned,re.I)
-        snippet=cleaned[loc.start():loc.start()+1000] if loc else cleaned[:1000]
-        found.append({
-            "PDFPage":index,
-            "Clause":"Approved Document A, Section 2C, paragraph 2C8",
-            "MinimumMasonryLeaf_mm":90,
-            "MinimumCavity_mm":50,
-            "SourceText":snippet,
-            "Applicability":"UNVERIFIED_SECTION_2C_CONDITIONS",
-            "MeasurementScope":"INDIVIDUAL_LEAVES_AND_CAVITY_NOT_TOTAL_WALL",
-        })
-    return found
