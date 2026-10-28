@@ -6,6 +6,10 @@ This is the original **IFC + PDF technical specification Graph-RAG research prot
 
 **Primary case:** `Project11.ifc` and `Contractual document sample.pdf` — the pairing used for the professor demonstration, NOT independently shown to be the same construction project. **Secondary interoperability case:** `02 Multifamiliar Formato Linear - Arquitetônico.ifc` and `Walls_for_IFC_Software.pdf` — also not independently confirmed as one project. Both must be labelled illustrative when testing contractual applicability.
 
+## Reusability guardrail — do not hard-code the sample project
+
+The production Streamlit workflow must not assume Project11, Dorchester, England, 352 mm, or a fixed brick/cavity/block layer sequence. `controlled_layer_comparison.py` accepts user-confirmed layer labels and thicknesses for whichever PDF passage is selected. The source-specific 352 mm and England 90/50 mm runtime panels were removed. Such numbers may appear in a **test case or case-study report**, but they are not defaults or universal rules. PDF candidates remain unverified until scope and model applicability are checked.
+
 ## Exact supervisor comment -> implemented feature -> evidence
 
 | Supervisor's comment, 13 Oct 2026 | What is now implemented | Remaining acceptance |
@@ -30,16 +34,17 @@ This is the original **IFC + PDF technical specification Graph-RAG research prot
 - Current model-to-PDF matching cannot establish contractual applicability or equivalent assembly structure. All 103 remain NOT_ASSESSABLE, correctly.
 - Test 7 Gemini gave class-level clauses, not reviewed GlobalId applicability. `semantic_links.py` and ranking-aware graph+LLM context address the software part of this gap.
 - 30-element ground-truth worksheet is **blank**, thus no real F1; no prompt A/B repeat yet.
+- Result 9 used the original IFC, not the user's new Revit export. The new export is needed only for the controlled layer-extraction experiment, not to make the application project-specific.
 
 ## Complete code implementation status
 
-- **Implemented and unit tested:** IFC extraction, PDF source detection, candidate-to-GlobalId ranking, bounded Neo4j context selection, Gemini/OpenAI provider adapters, A/B repeatability machinery, separation of evidence and validated rules, deterministic classified comparisons, colour-coded report, mixed-class sampling, independently reviewed top-1 candidate metrics.
+- **Implemented and unit tested:** IFC extraction, PDF source detection, candidate-to-GlobalId ranking, bounded Neo4j context selection, Gemini/OpenAI provider adapters, A/B repeatability machinery, separation of evidence and validated rules, deterministic classified comparisons, colour-coded report, mixed-class sampling, independently reviewed top-1 candidate metrics, and the project-independent user-configured material-layer comparison.
 - **Not yet independently observed in a deployed app since the latest commits:** live Streamlit UI on actual Project11/spec, integrated Graph-RAG + provider output. CI proves pure logic and syntax only.
 - **Not yet a defensible real-world study:** independent document/model match, expert annotation of 25–30 sampled cases, actual A/B repeated responses and statistical comparison. Do not fabricate these results.
 
 ## Final acceptance conditions — do not request more tests from the user
 
-1. Deploy existing branch `wall-first-supervisor-2026-10-28`, `app.py`. Use Project11 + uploaded 74-page Dorchester PDF. The app now automatically displays 352 mm candidates and ranked specific IFC GlobalId pairs.
+1. Deploy branch `wall-first-supervisor-2026-10-28`, `app.py`. Project11 + the uploaded Dorchester PDF can remain one **illustrative test pairing**, but the app does not assume they are the same project. Select a PDF passage in the generic layer-comparison panel and manually confirm the ordered layer values for the controlled experiment. Candidate discovery/ranking is reusable for other IFC/PDF uploads.
 2. Turn on Neo4j and Gemini only if free-tier budget permits. Show source PDF page, candidate GlobalId, IFC measured layer and material/storey graph neighbours, LLM suggestion, uncertainty and export. This is candidate retrieval, not contractual PASS/FAIL.
 3. Open the **synthetic-only categories** expander for clearly labelled eight audit outcomes. Download the report.
 4. Download **automatically generated 30 mixed-class sample** and **top-1 clause review worksheet**. Reviewer should annotate actual project/contract applicability and relevance. If same-project contract cannot be verified, label case as *illustrative* and metrics as unavailable, not high accuracy.
