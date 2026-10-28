@@ -21,6 +21,7 @@ from llm_gateway import run_evidence_model, PROVIDER_MODELS, SECRETS
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from link_validation import link_review_worksheet, evaluate_link_review
+from controlled_demo import synthetic_classification_examples
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
@@ -261,6 +262,20 @@ if result:
     else:
         st.warning("User-verified rule comparison only. Other requirements and structural safety remain unassessed.")
     st.write("**Result categories:**", counts)
+    with st.expander("🧪 Supervisor demonstration: synthetic classification categories"):
+        st.warning("SYNTHETIC TEST DATA ONLY. Eight invented elements demonstrate the software classifications. These are NOT contractual evidence, real IFC results, or measured validation accuracy.")
+        demo_rows = synthetic_classification_examples()
+        demonstration = pd.DataFrame(demo_rows)
+        st.write("**Synthetic categories:**",demonstration["IssueCategory"].value_counts().to_dict())
+        st.dataframe(demonstration[["GlobalId","ObservedThickness_mm","ObservedMaterials",
+                                   "RequiredThickness_mm","IssueCategory","ReviewPriority",
+                                   "TruthProvenance"]].style.map(
+                          lambda v: f"background-color: {issue_colour(str(v))}",
+                          subset=["IssueCategory"]),
+                     hide_index=True,use_container_width=True)
+        st.download_button("⬇️ Download controlled synthetic classification (CSV)",
+                           demonstration.to_csv(index=False).encode("utf-8-sig"),
+                           "SYNTHETIC_only_classification_demonstration.csv","text/csv")
     table_and_export(rows)
     st.subheader("🏗️ Assembly requirements vs observed wall thickness — evidence only")
     st.caption("Entire PDF is searched automatically. No Gemini or Neo4j call. Numeric similarity is NOT contractual applicability and the 10 mm discovery window is NOT a permitted tolerance.")
