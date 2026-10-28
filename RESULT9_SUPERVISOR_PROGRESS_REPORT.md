@@ -13,19 +13,19 @@ Improve the original IFC–PDF + Neo4j + Gemini research prototype in accordance
 - Result 9 screenshot displays 40 retrieved Neo4j records and a Gemini 2.5 Flash source-referenced candidate response. Those demonstrate workflow activity, not retrieval accuracy.
 - A 30-wall validation cohort has 13 retrieved plus 17 non-retrieved wall observations. A separate 30-element mixed-class sample exists. Neither has independently verified ground-truth annotations. Real-world precision, recall and F1 cannot be reported.
 - The prior 350.4 mm versus 352 mm example was the student's deliberate Revit extraction test, NOT an actual building defect.
-- The previous app displayed no England Approved Document A paragraph 2C8 when the user supplied the **Dorchester PDF**. This source mismatch is expected, but confusing UX. Fixed with a source-specific Dorchester 352 mm controlled layer panel.
+- A previous app revision added Dorchester-specific 352 mm and England-specific 90/50 mm runtime panels. Those project/jurisdiction-specific panels have now been removed from the main app and replaced with a generic, user-configured material-layer comparison. This is important to keep the product reusable across different IFC/PDF pairs.
 
 ## Software improvements after Result 9
-- Added controlled_dorchester_test.py: source-specific evidence test using the PDF's nominal 352 mm assembly and three explicit IFC material layers. Reports exact layer values and differences, preserving document applicability as NOT_ESTABLISHED and building compliance as NOT_ASSESSABLE.
-- One near-352 mm single-layer wall returns EVIDENCE_INSUFFICIENT instead of a false mismatch. Three-layer naming and dimension conflicts are also screened. A different measured layer is labelled DIFFERS_FROM_SELECTED_NOMINAL_LAYER_VALUES, **never a real contractual failure**.
-- Streamlit now displays this Dorchester-specific test when the current PDF contains 352 mm cavity-wall descriptions; it suppresses the irrelevant absence-of-2C8 warning for that document.
+- Added controlled_layer_comparison.py: the user selects a source passage from the uploaded PDF and enters the layer labels and expected values after checking that passage. The same code accepts any number of layers and arbitrary positive thickness values; no Project11 name, Dorchester clause, jurisdiction, material, or fixed dimension is built into the comparison.
+- The generic comparison checks declared IFC layer counts and per-layer values, flags missing evidence and conflicting overall-width evidence for review, records the source page/text, and always leaves actual contractual applicability and building compliance unverified.
+- The main Streamlit workflow no longer invokes the Dorchester 352 mm test or England AD A 90/50 mm test as special-case runtime logic. Specific values such as 102/150/100 are only one possible user-entered experiment, not defaults or universal rules.
 - Existing IFC/PDF extraction, 39 improved element-to-page candidates, graph context, Gemini module, coloured exports, prompt experiments and mixed-class samples remain intact.
 
 ## Exactly what the student should do in Revit
-**Do not edit all wall types indiscriminately.** Unrelated concrete walls, partitions and curtain walls need to remain unchanged negative/out-of-scope controls. Duplicating a Revit wall type first prevents changing every occurrence of the source type unintentionally.
+**Do not convert every wall into the same construction.** You may edit many wall instances, but preserve different real wall categories as controls. Unrelated concrete walls, partitions and curtain walls should not be assigned a brick/cavity/block build-up just to force a match. Duplicate Revit wall types first so the source model stays intact.
 
 1. Save a COPY of the Project11 Revit project with EXPERIMENT in its name.
-2. Duplicate three appropriate masonry wall types, each with actual material layers named Brick, Cavity/Air gap and Block, in that order. Use three deliberately defined compositions:
+2. For a controlled test of the chosen PDF passage, duplicate appropriate masonry wall types and define actual material layers. If you choose the Dorchester example, the PDF excerpt suggests the following test values; these are **experiment inputs only, not rules embedded in the software**:
    - EXP-352-BASELINE: 102 mm brick + 150 mm cavity + 100 mm block = 352 mm.
    - EXP-342-CAVITY: 102 mm brick + 140 mm cavity + 100 mm block = 342 mm; only cavity differs by −10 mm.
    - EXP-342-BLOCK: 102 mm brick + 150 mm cavity + 90 mm block = 342 mm; only block differs by −10 mm.
