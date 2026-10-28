@@ -1,6 +1,6 @@
 """Wall-first workflow regression tests; no live credentials required."""
 import pytest
-from wall_focus import numeric_references_mm,wall_numeric_candidates,wall_thickness_references_mm,wall_scope_issue,comparable_wall_group,review_wall_clause,review_wall_batch
+from wall_focus import numeric_references_mm,wall_numeric_candidates,wall_thickness_references_mm,wall_scope_issue,comparable_wall_group,screen_wall_clause_groups,review_wall_clause,review_wall_batch
 
 def wall(width=352):
     return {"GlobalId":"sample-wall","Type":"IfcWallStandardCase","Name":"W1",
@@ -110,3 +110,32 @@ def test_reject_layer_partial_thickness_with_numeric_total_same_fragment():
     mixed = "Wall leaf thickness 90 mm. Masonry cavity width 50 mm."
     assert wall_thickness_references_mm(mixed) == []
     assert wall_thickness_references_mm("All masonry walls require a minimum TOTAL wall thickness of 150 mm.") == [150]
+
+
+def test_screening_rejects_leaf_requirement_and_preserves_provenance():
+    data = [{"Page":9,"Text":"Cavity walls should have leaves at least 90mm thick and cavities 50mm wide",
+             "Types":["wall"],"Score":13},
+            {"Page":10,"Text":"Internal wall total thickness must be at least 95mm.",
+             "Types":["wall"],"Score":13}]
+    rows = screen_wall_clause_groups([wall(100)],data)
+    assert rows[0]["ScreeningStatus"] == "INCOMPATIBLE_MEASUREMENT"
+    assert rows[0]["PDFPage"] == 9
+    assert rows[1]["ScreeningStatus"] == "REVIEW_CANDIDATE"
+    assert rows[1]["PossibleTotalThickness_mm"] == "95.0"
+    assert rows[1]["ContractualApplicability"] == "NOT_VERIFIED"
+
+
+def test_screening_flags_external_wall_clause_for_internal_ifc():
+    c = [{"Page":4,"Text":"External wall total thickness must be at least 100 mm.",
+          "Types":["wall"],"Score":13}]
+    rows = screen_wall_clause_groups([wall(100)],c)
+    assert rows[0]["ScreeningStatus"] == "SCOPE_UNVERIFIED"
+
+
+def test_screening_is_grouped_without_modifying_wall_inputs():
+    first=wall(100)
+    second=dict(wall(100), GlobalId="wall-2")
+    row=screen_wall_clause_groups([first, second],
+         [{"Page":1,"Text":"Wall total thickness 100 mm.","Types":["wall"]}])
+    assert len(row)==1 and row[0]["WallCount"]==2
+    assert first["Width"] == 100
