@@ -42,8 +42,8 @@ def wall_thickness_references_mm(text):
     paragraph. The human reviewer still has to confirm the clause.
     """
     supported = []
-    for sentence in re.split(r"(?<=[.;])\\s+|[\\r\\n]+", text or ""):
-        positions = [m.start() for m in re.finditer(r"\\b(?:thickness|thick)\\b", sentence, re.I)]
+    for sentence in re.split(r"(?<=[.;])\s+|[\r\n]+", text or ""):
+        positions = [m.start() for m in re.finditer(r"\b(?:thickness|thick)\b", sentence, re.I)]
         if not positions:
             continue
         for match in _LENGTH.finditer(sentence):
@@ -53,12 +53,12 @@ def wall_thickness_references_mm(text):
             if min(abs(p-match.start()) for p in positions) > 75:
                 continue
             # These often express building height, not physical wall thickness.
-            if re.search(r"\\b(?:height|high|tall|storey|stories|above ground)\\b", context):
+            if re.search(r"\b(?:height|high|tall|storey|stories|above ground)\b", context):
                 continue
             # A tolerance or a table reference is not the actual requirement.
-            if re.search(r"\\b(?:tolerance|deviation|difference|table\\s*\\d+)\\b", context):
+            if re.search(r"\b(?:tolerance|deviation|difference|table\s*\d+)\b", context):
                 continue
-            if re.search(r"(?:[±]|\\+/-|\\-\\s*)\\s*$", before):
+            if re.search(r"(?:[±]|\+/-|\-\s*)\s*$", before):
                 continue
             numeric = numeric_references_mm(match.group(0))
             if numeric and numeric[0] <= 2000 and numeric[0] not in supported:
@@ -80,7 +80,7 @@ def comparable_wall_group(walls, anchor):
     Grouping is ONLY a reviewer aid, never proof of shared contractual scope.
     """
     def signature(e):
-        names = [re.sub(r"\\s*\\(\\s*\\d+(?:\\.\\d+)?\\s*mm\\s*\\)", "", str(m)).strip().casefold()
+        names = [re.sub(r"\s*\(\s*\d+(?:\.\d+)?\s*mm\s*\)", "", str(m)).strip().casefold()
                  for m in e.get("Materials", [])]
         return (e.get("Type"), tuple(sorted(names)), e.get("IsExternal"))
     sig = signature(anchor)
