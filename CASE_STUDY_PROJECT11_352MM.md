@@ -16,20 +16,20 @@ This is an **assembly-level nominal design description**, NOT an automatic lower
 
 `Project11.ifc` is IFC2X3 exported via Autodesk Revit 2024 with authoring metadata dated September 2026. Its project fields are generic (`Project Number` / `Project Name`), not an independently established Dorchester Living/Heyford Park link. IFC native length is **FOOT** (1 foot = 304.8 mm).
 
-Within the 76 wall instances traceable via IFC material-layer associations:
+Within the latest Test 6 extraction of 103 wall-related IFC objects (76 IfcWallStandardCase, 24 IfcWall, and 3 IfcCurtainWall):
 - Six wall instances of `Mauerwerk - Stein Bestand 350` use **1.148293963254593 feet**, which converts to **350.00000 mm**.
-- Six other wall instances (including `Ortbeton - STB 200` and `Mauerwerk - Stein Bestand 800`) use **1.1484375 feet**, which converts to **350.04375 mm**.
+- Seven other wall instances (including `Ortbeton - STB 200` and `Mauerwerk - Stein Bestand 800`) use **1.1484375 feet**, which converts to **350.04375 mm**.
 - Their model material-layer associations reference a **single layer**, not an independently verified 102+150+100 mm cavity assembly.
 
-Those are observed IFC evidence values, not design defects.
+That makes **13** wall instances numerically near 350 mm (six at 350 mm, seven at 350.04375 mm). These are observed IFC evidence values, not design defects.
 
 ## Explaining the professor's 350.4 versus 352 example
 
-- The sample PDF **does contain 352 mm**, but only within conditional wall assembly specifications.
+- The sample PDF **does contain 352 mm**, but only within conditional wall assembly specifications. Three whole-assembly references are detectable: PDF pages **14, 14, 15**.
 - Direct numeric differences from the above IFC material-layer totals are:
   - 350.00000 - 352 = **-2.00000 mm**;
   - 350.04375 - 352 = **-1.95625 mm**.
-- The **350.4 mm** number from the prior demonstration does **not** agree with these 12 declared material-layer totals. It might come from a different element/property/geometry result, but has **not** been traced. Do not present 350.4 as independently confirmed.
+- The **350.4 mm** number from the prior demonstration does **not** agree with these 13 declared material-layer totals. It might come from a different element/property/geometry result, but has **not** been traced. Do not present 350.4 as independently confirmed.
 - No automatic geometry mismatch can be concluded without confirming a specific wall GlobalId, the actual comparable assembly property, contract-project association, precise wall category/storey/position, and any permitted design tolerance.
 
 ## Application correction
