@@ -20,6 +20,7 @@ from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from evidence_linking import link_pdf_evidence
+from wall_focus import wall_numeric_candidates, numeric_references_mm, review_wall_clause
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
 
@@ -56,9 +57,9 @@ def graph_lookup(model_hash, rows):
     from ifc_to_neo4j import IFCGraphMapper
     mapper = IFCGraphMapper()
     try:
-        limited = rows[:300]  # honest partial graph cap for large IFC uploads
+        limited = rows[:40]  # free-tier-friendly bounded graph subset; stable GlobalId ordering
         uploaded = mapper.upload_elements(model_hash, limited)
-        return mapper.retrieve_element_neighborhood([r["GlobalId"] for r in limited], model_hash, limit=150), uploaded
+        return mapper.retrieve_element_neighborhood([r["GlobalId"] for r in limited], model_hash, limit=40), uploaded
     finally:
         mapper.close()
 
@@ -92,7 +93,7 @@ with st.sidebar:
     st.header("⚙️ Inputs and tests")
     ifc_upload = st.file_uploader("Any IFC2x3/IFC4 model", type=["ifc"])
     pdf_upload = st.file_uploader("Any searchable technical-specification PDF", type=["pdf"])
-    component = st.text_input("IFC elements to extract", value="All model elements",
+    component = st.text_input("IFC elements to extract", value="Wall",
         help="All model elements, Wall, Beam, Slab, Column, Door, Window, Roof, or a comma-separated IFC class list e.g. IfcWall,IfcDoor")
     st.caption("No sample IFC filename, GlobalId, country or building code is assumed.")
     st.subheader("1. Evaluation mode")
@@ -175,8 +176,8 @@ if run:
             llm_output, llm_error, prompt_hash = "", "", ""
             llm_model_used, llm_fallback_used, llm_attempts = None, False, 0
             if use_llm:
-                excerpts = candidates_text(candidates)
-                selected_graph = json.dumps(graph[:12], ensure_ascii=False, default=str)
+                excerpts = candidates_text(candidates[:25])
+                selected_graph = json.dumps(graph[:8], ensure_ascii=False, default=str)
                 prompt = prompt_for(", ".join(actual_classes), excerpts, prompt_variant, selected_graph)
                 prompt_hash = prompt_sha256(prompt)
                 with st.spinner("Gemini: suggesting traceable clauses (no compliance verdict)..."):
@@ -238,6 +239,56 @@ if result:
                            link_table.to_csv(index=False).encode("utf-8-sig"),
                            "element_pdf_candidate_links.csv","text/csv")
 
+    st.subheader("🧱 One-wall contractual evidence review")
+    st.caption("Select one extracted IFC wall and one PDF search excerpt. A reviewer must verify project applicability, clause scope and the meaning of the measurement. No rule is inferred automatically.")
+    wall_items = [e for e in elements if e.get("Type","").startswith("IfcWall")]
+    wall_candidates = wall_numeric_candidates(result["candidates"])
+    if not wall_items:
+        st.info("No wall elements in this IFC selection.")
+    elif not wall_candidates:
+        st.info("No wall-related PDF passages with explicit dimension tokens in the selected search extracts. Review full PDF candidates or use a corresponding specification.")
+    else:
+        chosen_wall_id = st.selectbox("Wall GlobalId", [e["GlobalId"] for e in wall_items],
+                                     format_func=lambda gid: f"{gid} — {next((e['Name'] for e in wall_items if e['GlobalId']==gid), '')}")
+        chosen_wall = next(e for e in wall_items if e["GlobalId"] == chosen_wall_id)
+        st.write("**IFC evidence:**", {
+            "GlobalId": chosen_wall_id,
+            "Thickness_mm": chosen_wall.get("Width"),
+            "ThicknessSource": chosen_wall.get("WidthSource"),
+            "MeasurementQuality": chosen_wall.get("MeasurementQuality"),
+            "Materials": chosen_wall.get("Materials"),
+            "ThicknessCandidates": chosen_wall.get("ThicknessCandidates"),
+        })
+        idx = st.selectbox("Candidate PDF passage", list(range(len(wall_candidates))),
+                           format_func=lambda i: f"PDF page {wall_candidates[i]['Page']} | {wall_candidates[i]['Text'][:110]}")
+        passage = wall_candidates[idx]
+        st.text(passage["Text"])
+        options = numeric_references_mm(passage["Text"])
+        st.caption("Numeric tokens converted to mm from this PDF passage. These are NOT automatically classified as wall thickness.")
+        chosen_value = st.selectbox("Contractual thickness value (mm) — independently identify", options)
+        direction = st.selectbox("Meaning of the verified clause", ["equal", "minimum", "maximum"],
+                                 format_func=lambda x: {"equal":"Exact / nominal", "minimum":"At least (minimum)", "maximum":"At most (maximum)"}[x])
+        allowed = st.number_input("Verified permitted tolerance (mm)", min_value=0.0, value=0.0, step=0.1)
+        doc_ok = st.checkbox("I independently confirmed this PDF belongs to the IFC project", key="wall_doc_verified")
+        clause_ok = st.checkbox("I verified this passage explicitly governs the selected wall's total thickness and confirmed its scope", key="wall_clause_verified")
+        if st.button("Compare this wall with the verified clause", key="compare_wall", disabled=not (doc_ok and clause_ok)):
+            try:
+                checked = review_wall_clause(chosen_wall,passage,chosen_value,direction,allowed,
+                                             document_confirmed=doc_ok,clause_confirmed=clause_ok)
+                st.session_state["single_wall_review"] = dict(
+                    checked, IFC_SHA256=result["IFC_SHA256"],PDF_SHA256=result["PDF_SHA256"])
+            except ValueError as exc:
+                st.error(str(exc))
+        verified_row = st.session_state.get("single_wall_review")
+        if verified_row and verified_row.get("IFC_SHA256")==result["IFC_SHA256"] and verified_row.get("PDF_SHA256")==result["PDF_SHA256"] and verified_row.get("GlobalId")==chosen_wall_id and verified_row.get("PDFPage")==passage["Page"] and verified_row.get("RequiredThickness_mm")==chosen_value and verified_row.get("ComparisonOperator")==direction and verified_row.get("Tolerance_mm")==allowed:
+            st.write("**Single-wall reviewed outcome:**", verified_row["IssueCategory"])
+            st.caption(verified_row["Explanation"])
+            st.download_button("⬇️ Download evidence-backed wall review (JSON)",
+                               json.dumps(verified_row,indent=2,ensure_ascii=False,default=str),
+                               "verified_single_wall_comparison.json","application/json")
+        elif verified_row:
+            st.caption("The inputs changed; run the comparison again for an updated reviewed outcome.")
+
     sample = sample_from_current_model(rows, n=min(30,len(rows)), seed=result["sampling_seed"])
     sheet = evidence_review_worksheet(sample)
     st.subheader(f"🧪 This IFC's reproducible validation sample: {len(sheet)} elements")
@@ -262,7 +313,7 @@ if result:
         st.error("Neo4j connection/query error: " + result["graph_error"])
     if result["graph_requested"]:
         st.caption(f"Neo4j graph elements uploaded: {result['graph_count']}; neighbours retrieved: {len(result['graph'])}. "
-                   "For large models only the first 300 sorted elements are graphed in this prototype.")
+                   "For free-tier testing, only the first 40 extracted elements are graphed; full IFC evidence remains available.")
     if result["graph"]:
         with st.expander(f"🕸️ Neo4j evidence from this IFC hash ({len(result['graph'])} records)"):
             st.dataframe(pd.DataFrame(result["graph"]),hide_index=True,use_container_width=True)
@@ -280,10 +331,10 @@ if result:
                    "API usage charges may apply. Similarity is NOT ground-truth accuracy.")
         if st.button("Run two repeats of BOTH prompts and save full outputs",key="repeatability"):
             runs=[]
-            graph_context=json.dumps(result["graph"][:12],ensure_ascii=False,default=str)
+            graph_context=json.dumps(result["graph"][:8],ensure_ascii=False,default=str)
             pages=set(range(1,result["pdf_page_count"]+1))
             for variant in PROMPT_VARIANTS:
-                p=prompt_for(", ".join(result["classes"]),candidates_text(result["candidates"]),variant,graph_context)
+                p=prompt_for(", ".join(result["classes"]),candidates_text(result["candidates"][:25]),variant,graph_context)
                 for repeat in (1,2):
                     with st.spinner(f"Prompt {variant}, repeat {repeat}/2..."):
                         try:
