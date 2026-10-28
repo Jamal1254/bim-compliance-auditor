@@ -15,15 +15,13 @@ import streamlit as st
 
 from audit_engine import AuditRule, MEASUREMENT_TYPES, audit_elements, categories_summary, issue_colour
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
-from spec_context import clause_candidates, candidates_text, adjacent_pdf_context, find_wall_assembly_specifications, find_ad_a_2c8_cavity_guidance
+from spec_context import clause_candidates, candidates_text, adjacent_pdf_context, find_wall_assembly_specifications
 from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256
 from llm_gateway import run_evidence_model, PROVIDER_MODELS, SECRETS
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from link_validation import link_review_worksheet, evaluate_link_review, wall_validation_sample, validate_frozen_review_rows
 from controlled_demo import synthetic_classification_examples
-from controlled_cavity_test import inspect_controlled_cavity_walls
-from controlled_dorchester_test import evaluate_nominal_cavity_352, is_dorchester_352_source
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
@@ -282,58 +280,83 @@ if result:
                            demonstration.to_csv(index=False).encode("utf-8-sig"),
                            "SYNTHETIC_only_classification_demonstration.csv","text/csv")
     table_and_export(rows)
-    assembly_sources = result.get("assembly_reqs", [])
-    if is_dorchester_352_source(assembly_sources):
-        st.subheader("🧱 Dorchester sample — 352 mm controlled Revit/IFC layer experiment")
-        st.caption("The PDF describes a nominal brick 102 mm + cavity 150 mm + block 100 mm assembly. We compare only declared IFC material layers, not an approximate overall width. No Gemini or Neo4j cost.")
-        dorchester_checks = evaluate_nominal_cavity_352(elements, assembly_sources)
-        dorchester_df = pd.DataFrame(dorchester_checks)
-        if not dorchester_df.empty:
-            st.write("**Dimensional-only observations:**",dorchester_df["ControlledDimensionStatus"].value_counts().to_dict())
-            if (dorchester_df["ControlledDimensionStatus"]=="EVIDENCE_INSUFFICIENT").all():
-                st.info("The current IFC does not establish a three-part brick/cavity/block wall. Overall thickness near 352 mm is insufficient. For a deliberate Revit experiment, preserve the source model and export clearly named three-layer wall types in a separate copy.")
-            st.dataframe(dorchester_df[["GlobalId","WallName","IFCLayerCount",
-                "IFCBrick_mm","IFCCavity_mm","IFCBlock_mm",
-                "BrickDifference_mm","CavityDifference_mm","BlockDifference_mm",
-                "ControlledDimensionStatus","Reason"]],hide_index=True,use_container_width=True)
-            st.download_button("⬇️ Download Dorchester nominal-layer evidence (CSV)",
-                               dorchester_df.to_csv(index=False).encode("utf-8-sig"),
-                               "dorchester_352_controlled_IFC_layer_results.csv","text/csv")
-        st.warning("This is a deliberately controlled test against a sample PDF, NOT evidence the Dorchester contract governs this IFC. Differences from nominal layers are NOT certified building defects. External/internal, damp-proof-course position, storey conditions and finishes still require review.")
-    st.subheader("🧱 England AD A §2C8 — controlled cavity-wall layer experiment")
-    st.caption("Uses only the IFC's actual material-layer set and the supplied PDF. No extra Gemini or Neo4j calls. Not a real building-compliance assessment.")
-    try:
-        ad_a_rules = find_ad_a_2c8_cavity_guidance(pdf_upload.getvalue())
-    except Exception as exc:
-        ad_a_rules = []
-        st.error(f"Unable to locate Section 2C8 evidence in PDF: {type(exc).__name__}: {exc}")
-    if ad_a_rules:
-        st.write("**Source found:**", [
-            f"PDF page {r['PDFPage']} | {r['Clause']} | leaf >= 90 mm, cavity >= 50 mm"
-            for r in ad_a_rules
-        ])
-        st.warning("These are TWO numerical checks on leaves and cavity, not a 140 mm or 230 mm overall-wall requirement. Section 2C also has building-category, storey, structural and other conditions that this screen does not verify.")
-        layer_checks = inspect_controlled_cavity_walls(elements)
-        layer_df = pd.DataFrame(layer_checks)
-        if not layer_df.empty:
-            st.write("**Material-layer evidence results:**", layer_df["DimensionTestStatus"].value_counts().to_dict())
-            if all(x == "EVIDENCE_INSUFFICIENT" for x in layer_df["DimensionTestStatus"]):
-                st.info("This IFC does not establish three separate masonry/cavity/masonry layers. For a controlled experiment, create a COPY of the Revit file and build a test wall type containing three explicitly named, separately dimensioned layers. Keep the original IFC unchanged.")
-            st.dataframe(layer_df[["GlobalId","WallName","LayerCount",
-                "ObservedLeaf1_mm","ObservedCavity_mm","ObservedLeaf2_mm",
-                "DimensionTestStatus","DimensionIssues"]],hide_index=True,use_container_width=True)
-            st.download_button("⬇️ Export controlled wall-layer measurements (CSV)",
-                               layer_df.to_csv(index=False).encode("utf-8-sig"),
-                               "controlled_england_ad_a_2c8_layer_checks.csv","text/csv")
+    assembly_rows = result.get("assembly_reqs", [])
+    st.subheader("🧪 Controlled IFC layer comparison — works with different projects")
+    st.caption("Optional experimental check. Select a passage from the uploaded PDF, then enter the layer sequence and dimensions you have independently confirmed in that passage. No project name, country, material or thickness is built into this comparison.")
+    if assembly_rows:
+        source_index = st.selectbox(
+            "Choose a candidate passage from the uploaded PDF",
+            list(range(len(assembly_rows))),
+            format_func=lambda i: (
+                f"PDF page {assembly_rows[i].get('PDFPage', '?')}: "
+                f"{assembly_rows[i].get('AssemblyThickness_mm', 'unspecified')} mm — "
+                f"{assembly_rows[i].get('AssemblyKind', 'assembly reference')}"
+            ),
+            key="controlled_layer_source_index",
+        )
+        selected_source = assembly_rows[source_index]
+        source_page = selected_source.get("PDFPage")
+        source_quote = str(selected_source.get("QuotedLine") or "")
+        source_label = str(selected_source.get("AssemblyKind") or "PDF assembly passage")
+        st.write("**Selected PDF passage (suggestion; confirm before use):**")
+        st.write(source_quote)
+        st.caption(f"PDF page {source_page}. The software has found a candidate passage; it has not verified that this clause applies to a particular wall.")
     else:
-        if not is_dorchester_352_source(assembly_sources):
-            st.info("This PDF has no verified Approved Document A §2C8 90/50 mm leaf/cavity passage. No Section 2C8 numerical test is inferred.")
+        st.info("No assembly passage was automatically identified. You can still run an experimental comparison by entering a PDF page and pasting the relevant text.")
+        source_page = st.number_input("PDF page number", min_value=1, max_value=100000, value=1, step=1, key="controlled_layer_manual_page")
+        source_quote = st.text_area("Paste the relevant text from the uploaded PDF", key="controlled_layer_manual_quote")
+        source_label = "Manually selected PDF passage"
+
+    with st.form("controlled_layer_comparison_form"):
+        layer_labels_text = st.text_input(
+            "Layer labels in IFC order (comma-separated)",
+            placeholder="e.g. outer leaf, cavity, inner leaf",
+        )
+        layer_thicknesses_text = st.text_input(
+            "Expected layer thicknesses in mm, in the same order (comma-separated)",
+            placeholder="e.g. 102, 150, 100",
+        )
+        layer_wall_filter = st.text_input(
+            "Optional wall name/type filter",
+            placeholder="Leave blank to inspect all IfcWall elements",
+        )
+        st.caption("Enter values only after checking the selected PDF passage. Layer labels are explanatory; compare layers in the order shown by the IFC. The numeric consistency check is not a regulatory or contractual tolerance.")
+        run_layer_comparison = st.form_submit_button("Compare configured layers with IFC evidence")
+    if run_layer_comparison:
+        try:
+            from controlled_layer_comparison import parse_layer_configuration, compare_wall_layers_to_configured_rule
+            configured_layers = parse_layer_configuration(layer_labels_text, layer_thicknesses_text)
+            if not str(source_quote).strip():
+                st.error("Select a PDF passage or paste its source text before comparing.")
+            else:
+                comparison_rows = compare_wall_layers_to_configured_rule(
+                    elements,
+                    configured_layers,
+                    source_page=source_page,
+                    source_quote=source_quote,
+                    source_label=source_label,
+                    name_or_type_filter=layer_wall_filter,
+                )
+                comparison_df = pd.DataFrame(comparison_rows)
+                if comparison_df.empty:
+                    st.info("No ordinary IFC wall elements matched this filter.")
+                else:
+                    st.write("**Controlled comparison counts:**", comparison_df["ControlledComparisonStatus"].value_counts().to_dict())
+                    st.dataframe(comparison_df, hide_index=True, use_container_width=True)
+                    st.download_button(
+                        "⬇️ Download configured layer comparison (CSV)",
+                        comparison_df.to_csv(index=False).encode("utf-8-sig"),
+                        "controlled_ifc_pdf_layer_comparison.csv",
+                        "text/csv",
+                    )
+                    st.warning("These are comparisons with values manually configured from a selected PDF passage. They do not establish that the PDF governs this model, and they are not building-compliance verdicts.")
+        except ValueError as exc:
+            st.error(str(exc))
 
     st.subheader("🏗️ Assembly requirements vs observed wall thickness — evidence only")
     st.caption("Entire PDF is searched automatically. No Gemini or Neo4j call. Numeric similarity is NOT contractual applicability and the 10 mm discovery window is NOT a permitted tolerance.")
-    assembly_rows = result.get("assembly_reqs", [])
     if assembly_rows:
-        st.write(f"**{len(assembly_rows)} potential overall cavity-wall/facing-masonry assembly references found in the full PDF.**")
+        st.write(f"**{len(assembly_rows)} potential wall-assembly references found in the full PDF.**")
         assembly_df = pd.DataFrame(assembly_rows)
         st.dataframe(assembly_df[["PDFPage","AssemblyThickness_mm","AssemblyKind",
                                    "QuotedLine","ContractualApplicability"]],
