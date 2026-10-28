@@ -38,7 +38,8 @@ def numeric_references_mm(text):
 _PART_NOT_TOTAL = re.compile(
     r"\b(?:leaf|leaves|wythe|wythes|cavity|cavities|air\s*gap|insulation|"
     r"lining|plaster|render|cladding|wall\s*tie|"
-    r"building\s*height|storey\s*height|story\s*height)\b",
+    r"building\s*height|storey\s*height|story\s*height|"
+    r"materials?|coatings?|membranes?|sheets?|foil|facings?|boards?)\b",
     re.IGNORECASE,
 )
 _NON_THICKNESS = re.compile(
@@ -77,6 +78,24 @@ def wall_thickness_references_mm(text):
                 if value <= 2000 and value not in found:
                     found.append(value)
     return found
+
+
+
+def comparison_hint(text):
+    """Return a directional clue from a clause, never certified applicability.
+
+    If conflicting directions appear in a short excerpt, require review.
+    """
+    t = str(text or "").casefold()
+    low_bound = bool(re.search(
+        r"\b(?:minimum|at\s+least|not\s+less\s+than|no\s+less\s+than|"
+        r"not\s+below|shall\s+not\s+be\s+less\s+than)\b", t))
+    high_bound = bool(re.search(
+        r"\b(?:maximum|at\s+most|not\s+greater\s+than|no\s+more\s+than|"
+        r"not\s+exceed|up\s+to)\b", t))
+    if low_bound == high_bound:
+        return None
+    return "minimum" if low_bound else "maximum"
 
 
 def wall_scope_issue(wall, text):
@@ -148,6 +167,7 @@ def screen_wall_clause_groups(walls, candidates, *, limit=80):
                 "CandidateText": text[:950],
                 "PossibleTotalThickness_mm": "; ".join(str(x) for x in measurements),
                 "ScreeningStatus": status, "ScreeningReason": reason,
+                "SuggestedOperator": comparison_hint(text) or "UNDETERMINED",
                 "ContractualApplicability": "NOT_VERIFIED",
             })
     return out
@@ -202,6 +222,12 @@ def review_wall_clause(wall, candidate, required_mm, comparison, tolerance_mm, *
     issue = wall_scope_issue(wall, text)
     if issue:
         raise ValueError("Clause scope is not supported for this wall: " + issue)
+    hint = comparison_hint(text)
+    if hint is not None and comparison != hint:
+        raise ValueError(
+            f"The source excerpt indicates a {hint} requirement, not {comparison}. "
+            "Select the direction supported by the complete verified clause."
+        )
     values = wall_thickness_references_mm(text)
     if not any(abs(x-required_mm) < 0.001 for x in values):
         raise ValueError("Selected dimension is not explicitly supported as a wall thickness in this PDF passage.")
