@@ -16,7 +16,8 @@ import streamlit as st
 from audit_engine import AuditRule, MEASUREMENT_TYPES, audit_elements, categories_summary, issue_colour
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
 from spec_context import clause_candidates, candidates_text, adjacent_pdf_context, find_wall_assembly_specifications
-from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses_with_status
+from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256
+from llm_gateway import run_evidence_model, PROVIDER_MODELS, SECRETS
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from link_validation import link_review_worksheet, evaluate_link_review
@@ -139,21 +140,23 @@ with st.sidebar:
     st.subheader("2. Optional modules")
     with_graph = st.checkbox("Retrieve model-isolated Neo4j graph evidence", value=False)
     use_llm = st.checkbox("Gemini — suggest PDF clauses (unverified)", value=False)
+    llm_provider = "Gemini"
     llm_model = "gemini-2.5-flash"
     prompt_variant = next(iter(PROMPT_VARIANTS))
     if use_llm:
-        llm_model = st.selectbox("LLM", ["gemini-2.5-flash", "gemini-2.0-flash"])
+        llm_provider = st.selectbox("LLM provider", list(PROVIDER_MODELS))
+        llm_model = st.selectbox("LLM model", PROVIDER_MODELS[llm_provider])
         prompt_variant = st.selectbox("Prompt version", list(PROMPT_VARIANTS))
-        if not secret("GEMINI_API_KEY"):
-            st.error("Add GEMINI_API_KEY to Streamlit Secrets or disable Gemini.")
+        if not secret(SECRETS[llm_provider]):
+            st.error("Add " + SECRETS[llm_provider] + " to Streamlit Secrets or disable the LLM.")
     seed = st.number_input("Validation sampling seed", min_value=1, max_value=9999999, value=2026, step=1)
     run = st.button("🚀 Analyse uploaded files", type="primary", use_container_width=True)
 
 if run:
     if not ifc_upload or not pdf_upload:
         st.error("Upload both an IFC model and a searchable PDF.")
-    elif use_llm and not secret("GEMINI_API_KEY"):
-        st.error("Gemini API key missing. Add secret or disable Gemini.")
+    elif use_llm and not secret(SECRETS[llm_provider]):
+        st.error(SECRETS[llm_provider] + " missing. Add the secret or disable the LLM.")
     elif mode == "Verified contractual rule" and not confirmed:
         st.error("Confirm project/document/rule scope independently first, or choose Evidence extraction only.")
     else:
@@ -209,9 +212,9 @@ if run:
                 prompt = prompt_for(", ".join(actual_classes), excerpts, prompt_variant,
                     selected_graph + "\nPDF-to-specific-GlobalId candidate evidence (unverified):\n" + anchored)
                 prompt_hash = prompt_sha256(prompt)
-                with st.spinner("Gemini: suggesting traceable clauses (no compliance verdict)..."):
+                with st.spinner(f"{llm_provider}: suggesting traceable clauses (no compliance verdict)..."):
                     try:
-                        llm_response = candidate_clauses_with_status(secret("GEMINI_API_KEY"), prompt, llm_model)
+                        llm_response = run_evidence_model(llm_provider, secret(SECRETS[llm_provider]), prompt, llm_model)
                         llm_output = llm_response["text"]
                         llm_model_used = llm_response["model_used"]
                         llm_fallback_used = llm_response["fallback_used"]
@@ -225,7 +228,9 @@ if run:
                 "assembly_reqs": assembly_reqs, "ranked_links": ranked_links,
                 "mixed_worksheet": mixed_worksheet, "link_review_worksheet": top_candidate_review,
                 "graph":graph,"graph_count":graph_count,"graph_error":graph_error,
-                "gemini_text":llm_output,"gemini_error":llm_error,"gemini_model":llm_model if use_llm else None,
+                "gemini_text":llm_output,"gemini_error":llm_error,
+                "llm_provider":llm_provider if use_llm else None,
+                "gemini_model":llm_model if use_llm else None,
                 "gemini_model_used":llm_model_used,"gemini_fallback_used":llm_fallback_used,
                 "gemini_attempts":llm_attempts,
                 "prompt_variant":prompt_variant if use_llm else None,"prompt_hash":prompt_hash,
@@ -517,14 +522,14 @@ if result:
     if result["gemini_error"]:
         st.error("Gemini request error: " + result["gemini_error"])
     if result["gemini_requested"]:
-        st.subheader("🧠 Gemini-suggested PDF clauses — unverified")
-        st.caption(f"Requested model: {result['gemini_model']} | Actual model: {result.get('gemini_model_used') or 'unavailable'} | Variant: {result['prompt_variant']} | Prompt SHA-256: {result['prompt_hash']}")
+        st.subheader("🧠 LLM-suggested PDF clauses — unverified")
+        st.caption(f"Provider: {result.get('llm_provider')} | Requested model: {result['gemini_model']} | Actual model: {result.get('gemini_model_used') or 'unavailable'} | Variant: {result['prompt_variant']} | Prompt SHA-256: {result['prompt_hash']}")
         if result.get("gemini_fallback_used"):
             st.warning("Primary Gemini model was temporarily unavailable; alternate model produced this candidate evidence. The actual model is recorded for repeatability.")
         st.text(result["gemini_text"] or "No response available")
     if result["gemini_requested"]:
         st.subheader("🔁 Supervisor experiment — Prompt A/B repeatability")
-        st.caption("Optional: 4 Gemini calls (A twice, B twice) using the SAME IFC/PDF/graph evidence. "
+        st.caption("Optional: 4 LLM calls (A twice, B twice) using the SAME IFC/PDF/graph evidence. "
                    "API usage charges may apply. Similarity is NOT ground-truth accuracy.")
         if st.button("Run two repeats of BOTH prompts and save full outputs",key="repeatability"):
             runs=[]
@@ -540,7 +545,7 @@ if result:
                 for repeat in (1,2):
                     with st.spinner(f"Prompt {variant}, repeat {repeat}/2..."):
                         try:
-                            response=candidate_clauses_with_status(secret("GEMINI_API_KEY"),p,result["gemini_model"])
+                            response=run_evidence_model(result["llm_provider"],secret(SECRETS[result["llm_provider"]]),p,result["gemini_model"])
                             entry=record_output(variant,repeat,result["gemini_model"],response["model_used"],
                                                 prompt_sha256(p),response["text"],pages)
                         except Exception as exc:
@@ -560,7 +565,7 @@ if result:
 
     metadata = {k: result[k] for k in ("version","created_utc","IFC_SHA256","PDF_SHA256","mode","classes",
                        "graph_requested","graph_count","graph_error","gemini_requested","gemini_model",
-                       "prompt_variant","prompt_hash","gemini_error","sampling_seed",
+                       "prompt_variant","prompt_hash","gemini_error","sampling_seed","llm_provider",
                        "gemini_model_used","gemini_fallback_used","gemini_attempts")}
     metadata["graph_retrieved_rows"] = len(result["graph"])
     metadata["element_specific_unverified_pairs"] = len(result.get("ranked_links", []))
