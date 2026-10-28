@@ -20,7 +20,7 @@ from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256
 from llm_gateway import run_evidence_model, PROVIDER_MODELS, SECRETS
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
-from link_validation import link_review_worksheet, evaluate_link_review, wall_validation_sample
+from link_validation import link_review_worksheet, evaluate_link_review, wall_validation_sample, validate_frozen_review_rows
 from controlled_demo import synthetic_classification_examples
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
@@ -502,21 +502,8 @@ if result:
         if reviewed_links is not None:
             try:
                 reviewed_table=pd.read_csv(io.BytesIO(reviewed_links.getvalue()),dtype=str).fillna("")
-                expected=set(link_sample_df["GlobalId"])
-                if set(reviewed_table.columns) != set(link_sample_df.columns):
-                    raise ValueError("Reviewed worksheet must preserve every original column.")
-                actual=list(reviewed_table["GlobalId"])
-                if len(actual)!=len(set(actual)) or set(actual)!=expected:
-                    raise ValueError("Reviewed GlobalIds must match the frozen wall validation cohort.")
-                # Only human review fields may be changed. A reviewer cannot alter
-                # source clauses, candidate IDs, model measurements or predictions.
-                editable={"verified_document_applies","ground_truth_applicable_requirement_ids",
-                          "ground_truth_property_comparable","ground_truth_mismatch","reviewer_notes"}
-                original=link_sample_df.set_index("GlobalId").fillna("")
-                checked=reviewed_table.set_index("GlobalId").fillna("")
-                for column in set(original.columns)-editable:
-                    if (original[column].astype(str).sort_index() != checked[column].astype(str).sort_index()).any():
-                        raise ValueError(f"Frozen evidence/prediction column was modified: {column}")
+                validate_frozen_review_rows(link_sample_df.to_dict("records"),
+                                            reviewed_table.to_dict("records"))
                 st.json(evaluate_link_review(reviewed_table.to_dict("records")))
                 st.caption("Link-event statistics: a wrong predicted clause when another applicable clause exists counts both an incorrect link (FP) and a missed correct link (FN). These are NOT conventional mutually exclusive element classifications; no real project accuracy is available without independent review.")
             except Exception as exc:
