@@ -25,7 +25,7 @@ from reporting import colour_report_html
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
 
-APP_VERSION = "Original-code supervisor fix 2026-10-20"
+APP_VERSION = "Wall-first supervisor iteration 2026-10-28"
 st.set_page_config(page_title="BIM Evidence Auditor v4", page_icon="🏗️", layout="wide")
 st.title("🏗️ Automated BIM Model-vs-Specification Compliance Engine")
 st.caption("Improved original IFC/PDF + Neo4j + Gemini workflow, with project-independent matching safeguards.")
@@ -239,7 +239,7 @@ if result:
     links = result.get("element_links", [])
     direct = sum(x["EvidenceLevel"]=="EXACT_GLOBALID_CANDIDATE" for x in links)
     st.caption(f"{direct} exact-GlobalId PDF candidate(s), {len(links)-direct} type-level candidate(s). "
-               "All remain UNVERIFIED until source scope is independently confirmed.")
+               "These are literal identifier/class matches only, not semantic links. See the unverified wall-group screening below.")
     if links:
         link_table = pd.DataFrame(links)
         with st.expander(f"Review traceable PDF passages ({len(links)} candidates)"):
@@ -424,6 +424,13 @@ if result:
                        "prompt_variant","prompt_hash","gemini_error","sampling_seed",
                        "gemini_model_used","gemini_fallback_used","gemini_attempts")}
     metadata["graph_retrieved_rows"] = len(result["graph"])
+    metadata["wall_screening_counts"] = (
+        pd.DataFrame(screening)["ScreeningStatus"].value_counts().to_dict()
+        if screening else {}
+    )
+    metadata["wall_comparison_scope"] = "TOTAL_WALL_THICKNESS_ONLY"
+    metadata["local_group_screening_requires_api_call"] = False
+
     metadata["gemini_output_available"] = bool(result["gemini_text"])
     st.download_button("⬇️ Research reproducibility metadata (JSON)",json.dumps(metadata,indent=2),
                        "audit_run_metadata_v4.json","application/json")
