@@ -99,3 +99,23 @@ def clause_candidates(pdf_bytes, component="Wall", max_chars=16000):
 
 def candidates_text(candidates):
     return "\n\n".join(f"[PDF page {x['Page']}; candidates: {', '.join(x['Types'])}] {x['Text']}" for x in candidates)
+
+
+def adjacent_pdf_context(pdf_bytes, page_number, radius=2, per_page_limit=6500):
+    """Read the original and adjacent PDF pages, preserving 1-based page numbers.
+
+    This is for human scope verification, not an automatic contract match.
+    A paragraph can depend on limitations on earlier pages.
+    """
+    reader = PdfReader(BytesIO(pdf_bytes))
+    page_number = int(page_number)
+    if page_number < 1 or page_number > len(reader.pages):
+        raise ValueError("PDF page is outside the uploaded document.")
+    radius = max(0, min(3, int(radius)))
+    sections = []
+    for index in range(max(0, page_number - radius - 1),
+                       min(len(reader.pages), page_number + radius)):
+        text = (reader.pages[index].extract_text() or "").strip()
+        sections.append(f"PDF page {index+1} (1-based upload page)\n"
+                        + (text[:per_page_limit] if text else "[No extractable text]"))
+    return "\n\n========== NEXT PAGE ==========\n\n".join(sections)
