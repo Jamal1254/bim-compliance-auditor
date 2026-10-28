@@ -2,8 +2,6 @@
 import hashlib
 import re
 import time
-from google import genai
-from google.genai import types
 
 PROMPT_VARIANTS = {
     "A - strict evidence": "For each represented IFC class, propose relevant requirements. Quote only short evidence excerpts and include their precise PDF page markers. State any scope restrictions; return 'no applicable clause found' when uncertain.",
@@ -67,7 +65,12 @@ def candidate_clauses_with_status(api_key, prompt, model="gemini-2.5-flash", *,
     """
     if not api_key:
         raise ValueError("GEMINI_API_KEY secret is missing")
-    client = client if client is not None else genai.Client(api_key=api_key)
+    # Import vendor SDK only when the Gemini adapter is actually invoked.
+    # This also permits OpenAI/offline validation without google-genai installed.
+    if client is None:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+    from google.genai import types
     sleeper = sleeper if sleeper is not None else time.sleep
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM, temperature=0.0, max_output_tokens=2800
