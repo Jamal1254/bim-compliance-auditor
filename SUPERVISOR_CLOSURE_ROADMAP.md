@@ -1,5 +1,13 @@
 # Supervisor closure roadmap — 28 October 2026
 
+## Original supervisor model now has its corresponding DEMONSTRATION PDF
+- User has supplied `Project11.ifc` and the PDF used in the professor demonstration, `Contractual document sample.pdf` (Dorchester Living, 2014).
+- **PDF page 14** describes 352 mm cavity-wall construction (102 mm outer masonry + 150 mm cavity + 100 mm inner block) for conditional two-storey external masonry walls; another facing masonry 352 mm description appears on page 14 and page 15.
+- Original IFC units use feet; 12 wall layer totals near this reference are **350 mm (six)** and **350.04375 mm (six)**. None of the traced material-layer values are 350.4 mm. Cross-check a different property/geometry if the old screenshot displayed 350.4.
+- The sampled IFC layer associations are single-layer materials; no evidence currently establishes their equivalence to the three-part cavity wall assembly. The IFC project metadata is generic and does not independently establish a Dorchester Living/Heyford Park contract relationship.
+- The standalone `CASE_STUDY_PROJECT11_352MM.md` records the full conditional analysis. The app's new no-cost **full-PDF cavity-wall assembly search** identifies 352 mm as a nominal assembly candidate, not a verified rule for any GlobalId. Do not turn the arithmetic differences into compliance FAIL.
+- Next: live test the exact IFC+PDF with assembly-search UI; then find a genuinely matched project/specification or use a controlled synthetic experiment, and annotate ground truth.
+
 ## Project target
 Design and evaluate an IFC + project-contract PDF linking prototype using Neo4j-supported Graph-RAG, with traceable candidate retrieval, human applicability verification, deterministic comparisons, and measured precision/recall/F1 against independently checked ground truth.
 
