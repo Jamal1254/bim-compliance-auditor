@@ -51,3 +51,21 @@ def test_find_nominal_352_assembly_without_confusing_90mm_leaf(monkeypatch):
     assert all(x["IFCElementLink"] == "NOT_VERIFIED" for x in found)
     assert all(x["ComparisonMeaning"] == "NOMINAL_ASSEMBLY_NOT_AUTOMATIC_MINIMUM" for x in found)
     assert all("90mm" not in x["QuotedLine"] for x in found)
+
+
+def test_wall_assembly_discovery_is_not_limited_to_dorchester_phrases(monkeypatch):
+    class Page:
+        def __init__(self, text): self.text=text
+        def extract_text(self): return self.text
+    class Reader:
+        def __init__(self, _):
+            self.pages=[Page(
+                "External wall construction: 300mm external wall construction.\n"
+                "Concrete wall assembly 250mm concrete wall assembly.\n"
+                "Partition design: 125mm partition.\n"
+                "Layer rule: 100mm insulation layer."
+            )]
+    monkeypatch.setattr(spec_context, "PdfReader", Reader)
+    found = find_wall_assembly_specifications(b"pdf")
+    assert [x["AssemblyThickness_mm"] for x in found] == [300.0, 250.0, 125.0]
+    assert all(x["IFCElementLink"] == "NOT_VERIFIED" for x in found)
