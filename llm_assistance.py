@@ -19,6 +19,15 @@ SYSTEM = (
     "Internal/external status does NOT establish whether a wall is load-bearing. "
     "A referenced table without its actual numeric values is NOT a known numeric thickness requirement. "
     "A numeric dimension is only a wall thickness if the adjacent source text explicitly identifies it as such. "
+    "A dimension of a wall LEAF, cavity, coating, insulation material, sheeting, "
+    "or a minimum material thickness is NOT the total thickness of a wall. "
+    "When a snippet refers to another paragraph, table or diagram, mark its "
+    "full applicability conditions as MISSING, even if the excerpt contains a number. "
+    "Requirements may apply only to particular building heights, uses, "
+    "construction types, structural roles, jurisdictions, or dates. "
+    "Do not say 'Missing Information: None' merely because a value and unit are present. "
+    "Never claim a regulatory guidance document is a particular project's contract "
+    "or that its clauses govern a specific IFC element without supporting evidence. "
     "If the extracts are weak or unrelated, explicitly say the evidence is insufficient."
 )
 
