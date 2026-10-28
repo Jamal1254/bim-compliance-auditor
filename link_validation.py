@@ -99,6 +99,35 @@ def link_review_worksheet(sample_rows, ranked_links):
     return out
 
 
+REVIEWER_EDITABLE = {
+    "verified_document_applies", "ground_truth_applicable_requirement_ids",
+    "ground_truth_property_comparable", "ground_truth_mismatch", "reviewer_notes",
+}
+
+
+def validate_frozen_review_rows(frozen, reviewed):
+    """Reject edited predictions/measurements/clauses, duplicates, missing rows."""
+    baseline=list(frozen)
+    submitted=list(reviewed)
+    if not baseline or len(baseline)!=len(submitted):
+        raise ValueError("Reviewed sheet must contain all original sample rows.")
+    fieldnames=set(baseline[0])
+    if any(set(x)!=fieldnames for x in submitted):
+        raise ValueError("Reviewed worksheet must preserve all original columns.")
+    ids=[str(x.get("GlobalId") or "") for x in submitted]
+    if len(ids)!=len(set(ids)):
+        raise ValueError("Duplicate GlobalIds in reviewed worksheet.")
+    originals={str(x["GlobalId"]):x for x in baseline}
+    if set(ids)!=set(originals):
+        raise ValueError("Reviewer must not replace or omit original sampled IFC GlobalIds.")
+    for row in submitted:
+        original=originals[str(row["GlobalId"])]
+        for key in fieldnames-REVIEWER_EDITABLE:
+            if str(row.get(key) or "") != str(original.get(key) or ""):
+                raise ValueError(f"Frozen evidence/prediction modified in column: {key}")
+    return True
+
+
 def _truth_ids(value):
     """Unambiguous positive requirement IDs or explicit NONE; blank = unknown."""
     v = str(value or "").strip()
