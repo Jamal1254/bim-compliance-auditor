@@ -455,29 +455,43 @@ if result:
                "All contractual truth fields are blank pending an independent reviewer.")
     st.download_button("⬇️ Download current-model ground-truth worksheet (CSV)",
                        validation_csv(sheet).encode("utf-8-sig"), "ground_truth_for_uploaded_ifc.csv","text/csv")
-    st.subheader("📋 Mixed-element validation sample — optional, local only")
-    st.caption("The supervisor requested 25–30 diverse IFC elements. This action reads all element classes from the SAME uploaded IFC without calling Gemini or Neo4j; the wall-first analysis remains unchanged.")
-    if st.button("Generate 30-element mixed-class sample from this IFC (no API cost)", key="mixed_sample"):
-        try:
-            all_project_elements = extract_file(ifc_upload.getvalue(), "All model elements")
-            all_review_rows = audit_elements(all_project_elements, None)
-            mixed_sample = sample_from_current_model(all_review_rows, n=min(30,len(all_review_rows)), seed=result["sampling_seed"])
-            st.session_state["mixed_ground_truth"] = {
-                "ifc_hash": result["IFC_SHA256"],
-                "seed": result["sampling_seed"],
-                "worksheet": evidence_review_worksheet(mixed_sample),
-            }
-        except Exception as exc:
-            st.error(f"Mixed sample failed: {type(exc).__name__}: {exc}")
-    mixed = st.session_state.get("mixed_ground_truth")
-    if (mixed and mixed["ifc_hash"] == result["IFC_SHA256"]
-            and mixed["seed"] == result["sampling_seed"]):
-        mixed_df = pd.DataFrame(mixed["worksheet"])
-        st.write("**Sample class distribution:**", mixed_df["SampleIFCType"].value_counts().to_dict())
-        st.download_button("⬇️ Download mixed-class ground-truth worksheet (CSV)",
-                           validation_csv(mixed["worksheet"]).encode("utf-8-sig"),
-                           "ground_truth_mixed_elements.csv","text/csv")
-        st.caption("Independent ground truth remains BLANK. Random sampling and larger class diversity do not establish compliance or statistical accuracy.")
+    st.subheader("📋 Independent 30-element linkage validation")
+    mixed_rows = result.get("mixed_worksheet", [])
+    if mixed_rows:
+        mixed_df = pd.DataFrame(mixed_rows)
+        st.write("**Mixed-class sample distribution:**", mixed_df["SampleIFCType"].value_counts().to_dict())
+        st.download_button("⬇️ Download mixed-class mismatch ground-truth sheet (CSV)",
+                           validation_csv(mixed_rows).encode("utf-8-sig"),
+                           "mixed_elements_truth_BLANK.csv", "text/csv")
+    link_sample_rows = result.get("link_review_worksheet", [])
+    if link_sample_rows:
+        link_sample_df = pd.DataFrame(link_sample_rows)
+        st.caption("A top PDF clause candidate is attached to each sampled IFC GlobalId where one was retrieved. NO automatic ground truth. For non-wall element classes the current wall-only retrieval is incomplete.")
+        st.dataframe(link_sample_df[["GlobalId","SampleIFCType",
+                        "CandidateRequirementID","CandidatePDFPage",
+                        "PredictedTopCandidate","CandidateStatus"]],
+                     hide_index=True,use_container_width=True)
+        st.download_button("⬇️ Download top-1 element-to-clause review sheet (CSV)",
+                           validation_csv(link_sample_rows).encode("utf-8-sig"),
+                           "element_clause_top1_truth_BLANK.csv","text/csv")
+        reviewed_links = st.file_uploader("Upload independently labelled top-1 review sheet (optional)",type=["csv"],key="reviewed_links")
+        if reviewed_links is not None:
+            try:
+                reviewed_table=pd.read_csv(io.BytesIO(reviewed_links.getvalue()),dtype=str).fillna("")
+                expected=set(link_sample_df["GlobalId"])
+                actual=list(reviewed_table["GlobalId"])
+                if len(actual)!=len(set(actual)) or set(actual)!=expected:
+                    raise ValueError("The reviewed GlobalIds must match the 30 sampled IFC elements.")
+                expected_predictions=dict(zip(link_sample_df["GlobalId"],link_sample_df["PredictedTopCandidate"]))
+                for row in reviewed_table.to_dict("records"):
+                    if str(row["PredictedTopCandidate"]) != str(expected_predictions[row["GlobalId"]]):
+                        raise ValueError("Predictions were edited. Only independent ground-truth fields may change.")
+                st.json(evaluate_link_review(reviewed_table.to_dict("records")))
+                st.caption("Statistics measure this sample's TOP-1 retrieval, not contract compliance or full-specification recall.")
+            except Exception as exc:
+                st.error(f"Linkage evaluation error: {exc}")
+        else:
+            st.info("No independently labelled top-1 retrieval ground truth has been provided; precision/recall/F1 must remain unreported.")
 
     reviewed = st.file_uploader("Optional: upload manually reviewed/labelled worksheet to calculate metrics",type=["csv"],key="reviewed_truth")
     if reviewed is not None:
