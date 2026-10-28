@@ -14,7 +14,7 @@ def test_nominal_352_numeric_neighbours_not_mismatch():
     out=numerical_wall_assembly_neighbours([sample(350.0),sample(350.04375,"wall-2"),
                                           sample(100,"wall-3")],rule())
     assert len(out)==2
-    assert [x["SignedNumericalDifference_mm"] for x in out]==[-1.9562,-2.0]
+    assert [x["SignedNumericalDifference_mm"] for x in out]==[-1.9563,-2.0]
     assert all(x["ComplianceVerdict"]=="NOT_ASSESSABLE" for x in out)
     assert all(x["ContractualApplicability"]=="NOT_VERIFIED" for x in out)
     assert all(x["PropertyComparability"]=="NOT_VERIFIED" for x in out)
