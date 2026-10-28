@@ -1,6 +1,6 @@
 """Wall-first workflow regression tests; no live credentials required."""
 import pytest
-from wall_focus import numeric_references_mm,wall_numeric_candidates,wall_thickness_references_mm,wall_scope_issue,comparable_wall_group,screen_wall_clause_groups,review_wall_clause,review_wall_batch
+from wall_focus import numeric_references_mm,wall_numeric_candidates,wall_thickness_references_mm,wall_scope_issue,comparable_wall_group,screen_wall_clause_groups,review_wall_clause,review_wall_batch,comparison_hint
 
 def wall(width=352):
     return {"GlobalId":"sample-wall","Type":"IfcWallStandardCase","Name":"W1",
@@ -30,10 +30,15 @@ def test_unquoted_numeric_rejected():
 def test_minimum_vs_equal():
     p=passage("Wall minimum thickness 352 mm.")
     a=review_wall_clause(wall(355),p,352,"minimum",0,document_confirmed=True,clause_confirmed=True)
-    b=review_wall_clause(wall(355),p,352,"equal",0,document_confirmed=True,clause_confirmed=True)
+    with pytest.raises(ValueError, match="minimum requirement"):
+        review_wall_clause(wall(355),p,352,"equal",0,document_confirmed=True,clause_confirmed=True)
     assert a["IssueCategory"]=="PASS"
-    assert b["IssueCategory"]=="GEOMETRY_MISMATCH"
     assert a["PDFPage"]==12 and a["GlobalId"]=="sample-wall"
+
+def test_explicit_equal_rule_still_supported():
+    p = passage("The wall shall have an exact nominal thickness of 352 mm.")
+    r=review_wall_clause(wall(355),p,352,"equal",0,document_confirmed=True,clause_confirmed=True)
+    assert r["IssueCategory"]=="GEOMETRY_MISMATCH"
 
 def test_minimum_shortfall():
     r=review_wall_clause(wall(350.4),passage(),352,"minimum",0,
@@ -139,3 +144,30 @@ def test_screening_is_grouped_without_modifying_wall_inputs():
          [{"Page":1,"Text":"Wall total thickness 100 mm.","Types":["wall"]}])
     assert len(row)==1 and row[0]["WallCount"]==2
     assert first["Width"] == 100
+
+
+def test_real_test4_firewall_material_thickness_not_wall_thickness():
+    t = "See para 11.7 Area of fire resisting wall with materials more than 1mm thick and"
+    assert wall_thickness_references_mm(t) == []
+    assert wall_numeric_candidates([{"Page":81,"Text":t,"Types":["wall"]}]) == []
+    out=screen_wall_clause_groups([wall(100)],[{"Page":81,"Text":t,"Types":["wall"]}])
+    assert out[0]["ScreeningStatus"] != "REVIEW_CANDIDATE"
+
+def test_real_test4_page28_minimum_rule_hint():
+    t = "The walls should have a minimum thickness of 90mm. Diagram 18 Wall thickness See para 2C38"
+    assert wall_thickness_references_mm(t) == [90.0]
+    assert comparison_hint(t) == "minimum"
+    with pytest.raises(ValueError, match="minimum requirement"):
+        review_wall_clause(wall(100),{"Page":28,"Text":t,"Types":["wall"]},
+                           90,"equal",0,document_confirmed=True,clause_confirmed=True)
+    record=review_wall_clause(wall(100),{"Page":28,"Text":t,"Types":["wall"]},
+                              90,"minimum",0,document_confirmed=True,clause_confirmed=True)
+    assert record["IssueCategory"] == "PASS"
+    assert record["ReviewNote"].startswith("Reviewer-confirmed")
+
+
+def test_maximum_rule_semantics_cannot_be_swapped():
+    p=passage("Walls shall have a maximum thickness of 125 mm.")
+    assert comparison_hint(p["Text"])=="maximum"
+    with pytest.raises(ValueError,match="maximum requirement"):
+        review_wall_clause(wall(100),p,125,"minimum",0,document_confirmed=True,clause_confirmed=True)
