@@ -46,20 +46,25 @@ def _requirements(assembly_rows):
 
 def rank_element_requirement_candidates(walls, assembly_rows, *,
                                         max_pairs=80, numeric_window_mm=15.0):
-    """Return ranked, source-linked pairs with non-verdict eligibility checks.
+    """Rank plausible wall-to-assembly evidence pairs; never issue verdicts.
 
-    Numeric distance is only one discovery hint, NEVER a tolerance. The
-    complete matched assembly and relevant building/project scope must be
-    verified separately, independently of the ranking score.
+    The numeric window is a *retrieval hint*, not building tolerance. A wall
+    very far from a nominal assembly and with no evidence of its constituent
+    materials is NOT a credible candidate for this particular requirement.
+    Different PDF requirements get fair representation under max_pairs.
     """
-    output = []
-    for requirement in _requirements(assembly_rows):
+    if max_pairs < 0 or not math.isfinite(numeric_window_mm) or numeric_window_mm < 0:
+        raise ValueError("Candidate budget and discovery window must be nonnegative")
+    requirements = list(_requirements(assembly_rows))
+    pools = []
+    for requirement in requirements:
         context = (requirement["ClauseText"] + " " + requirement["Context"]).casefold()
         external_clause = bool(re.search(r"\bexternal\s+(?:masonry\s+)?walls?\b", context))
         below_dpc = bool(re.search(r"\bbelow\s+(?:the\s+)?(?:damp\s+proof\s+course|dpc)\b", context))
         above_dpc = bool(re.search(r"\babove\s+(?:the\s+)?(?:damp\s+proof\s+course|dpc)\b", context))
+        pairs = []
         for e in walls:
-            if not str(e.get("Type") or "").startswith(("IfcWall",)):
+            if not str(e.get("Type") or "").startswith("IfcWall"):
                 continue
             gid = str(e.get("GlobalId") or "")
             if not gid:
@@ -68,42 +73,45 @@ def rank_element_requirement_candidates(walls, assembly_rows, *,
             distance = abs(width - requirement["PDFNominalAssembly_mm"]) if width is not None else None
             materials = _material_components(e)
             parts_present = all(materials.values())
+            near = distance is not None and distance <= numeric_window_mm
+            # Do not exhaust the candidate quota with generic 50/100/250 mm
+            # walls just because they are marked external in IFC.
+            if not near and not parts_present:
+                continue
             external = e.get("IsExternal")
             reasons = []
             score = 0
-            if distance is not None and distance <= numeric_window_mm:
+            if near:
                 score += 4
                 reasons.append(f"Numerical proximity {distance:.4f} mm (discovery, NOT tolerance)")
             elif distance is not None:
-                reasons.append("Reported IFC thickness differs from nominal PDF assembly")
+                reasons.append("Full-material assembly cue, but numeric thickness is distant")
             else:
-                reasons.append("Comparable IFC wall thickness not available")
+                reasons.append("Full-material assembly cue, but IFC total thickness unavailable")
             if external_clause and external is True:
                 score += 2
-                reasons.append("Model IsExternal=True supports external-category retrieval")
+                reasons.append("IsExternal=True is a category cue; not proof of contractual scope")
             elif external_clause and external is False:
-                reasons.append("CONFLICT: IFC marks element internal")
+                score -= 4
+                reasons.append("CONFLICT: IFC wall marked internal")
             elif external_clause:
-                reasons.append("External/internal scope unverified")
+                reasons.append("External/internal scope not established")
             if parts_present:
                 score += 3
-                reasons.append("Material names mention brick, cavity and block; verify layer structure")
+                reasons.append("Brick/cavity/block names present; assembly layer structure still unverified")
             else:
                 reasons.append("Full brick+cavity+block assembly NOT evidenced by material names")
             if below_dpc or above_dpc:
-                reasons.append("DPC level / number-of-storeys applicability not verified from IFC")
-            if width is None:
-                status = "MISSING_MEASUREMENT"
-            elif external_clause and external is False:
+                reasons.append("DPC level and house/storey applicability remain unverified")
+            if external_clause and external is False:
                 status = "SCOPE_CONFLICT"
+            elif width is None:
+                status = "MISSING_MEASUREMENT"
             elif not parts_present:
                 status = "ASSEMBLY_NOT_ESTABLISHED"
             else:
                 status = "REVIEW_REQUIRED"
-            # Only reasonably similar numerical candidates are useful for the
-            # bounded graph/LLM retrieval; distant elements are still eligible
-            # for local baseline comparison, if requested explicitly.
-            output.append({
+            pairs.append({
                 "RequirementID": requirement["RequirementID"],
                 "PDFPage": requirement["PDFPage"],
                 "ClauseText": requirement["ClauseText"],
@@ -120,20 +128,43 @@ def rank_element_requirement_candidates(walls, assembly_rows, *,
                 "PDFNominalAssembly_mm": requirement["PDFNominalAssembly_mm"],
                 "AbsNumericDifference_mm": round(distance, 4) if distance is not None else None,
                 "RankScore": score,
+                "RetrievalBasis": "numeric_proximity" if near else "material_assembly_terms",
                 "Reasons": "; ".join(reasons),
                 "ScreeningStatus": status,
                 "ContractualApplicability": "NOT_VERIFIED",
                 "StructuralComparability": "NOT_VERIFIED",
                 "ComplianceVerdict": "NOT_ASSESSABLE",
-                "Method": "context_plus_numeric_retrieval",
+                "Method": "scoped_ifc_pdf_evidence_ranking",
             })
-    # Keep one highest-scoring row per unique requirement-element pair
-    output.sort(key=lambda r: (
-        -r["RankScore"],
-        r["AbsNumericDifference_mm"] if r["AbsNumericDifference_mm"] is not None else float("inf"),
-        str(r["RequirementID"]), str(r["GlobalId"]),
-    ))
-    return output[:max_pairs]
+        pairs.sort(key=lambda row: (
+            row["ScreeningStatus"] == "SCOPE_CONFLICT",
+            -row["RankScore"],
+            row["AbsNumericDifference_mm"] if row["AbsNumericDifference_mm"] is not None else float("inf"),
+            str(row["GlobalId"]),
+        ))
+        pools.append(pairs)
+    # Round robin: a long, earlier PDF section must not monopolise the cap.
+    selected = []
+    cursor = [0] * len(pools)
+    seen = set()
+    while len(selected) < max_pairs:
+        advanced = False
+        for i, pool in enumerate(pools):
+            while cursor[i] < len(pool):
+                pair = pool[cursor[i]]
+                cursor[i] += 1
+                k = (pair["RequirementID"], pair["GlobalId"])
+                if k in seen:
+                    continue
+                seen.add(k)
+                selected.append(pair)
+                advanced = True
+                break
+            if len(selected) >= max_pairs:
+                break
+        if not advanced:
+            break
+    return selected
 
 
 def select_graph_elements(elements, ranked_links, cap=40):
