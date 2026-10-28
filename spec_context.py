@@ -119,3 +119,48 @@ def adjacent_pdf_context(pdf_bytes, page_number, radius=2, per_page_limit=6500):
         sections.append(f"PDF page {index+1} (1-based upload page)\n"
                         + (text[:per_page_limit] if text else "[No extractable text]"))
     return "\n\n========== NEXT PAGE ==========\n\n".join(sections)
+
+
+_ASSEMBLY_REGEX = re.compile(
+    r"(?<![\w.])(?P<value>\d+(?:[.,]\d+)?)\s*mm\s+"
+    r"(?P<kind>cavity\s+wall\s+construction|facing\s+masonry)\b",
+    re.IGNORECASE,
+)
+
+
+def find_wall_assembly_specifications(pdf_bytes, max_results=60):
+    """Find explicit assembly-level specifications across the entire PDF.
+
+    Return source pages and contextual lines. These are unverified clauses,
+    NOT rules applicable to individual IFC elements. A specified masonry
+    assembly is not automatically comparable to a single IFC material layer.
+    """
+    reader = PdfReader(BytesIO(pdf_bytes))
+    results = []
+    for page_index, page in enumerate(reader.pages, 1):
+        lines = [re.sub(r"\s+", " ", line).strip()
+                 for line in (page.extract_text() or "").splitlines()]
+        lines = [line for line in lines if line]
+        for line_index, line in enumerate(lines):
+            match = _ASSEMBLY_REGEX.search(line)
+            if match is None:
+                continue
+            value = float(match.group("value").replace(",", "."))
+            if not 0 < value <= 2000:
+                continue
+            start = max(0, line_index - 8)
+            finish = min(len(lines), line_index + 7)
+            evidence = " ".join(lines[start:finish])
+            results.append({
+                "PDFPage": page_index,
+                "AssemblyThickness_mm": value,
+                "AssemblyKind": match.group("kind").lower(),
+                "QuotedLine": line,
+                "SurroundingText": evidence[:2600],
+                "ComparisonMeaning": "NOMINAL_ASSEMBLY_NOT_AUTOMATIC_MINIMUM",
+                "ContractualApplicability": "NOT_VERIFIED",
+                "IFCElementLink": "NOT_VERIFIED",
+            })
+            if len(results) >= max_results:
+                return results
+    return results
