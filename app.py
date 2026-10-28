@@ -23,6 +23,7 @@ from validation import evaluate_records
 from link_validation import link_review_worksheet, evaluate_link_review, wall_validation_sample, validate_frozen_review_rows
 from controlled_demo import synthetic_classification_examples
 from controlled_cavity_test import inspect_controlled_cavity_walls
+from controlled_dorchester_test import evaluate_nominal_cavity_352, is_dorchester_352_source
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
@@ -281,6 +282,24 @@ if result:
                            demonstration.to_csv(index=False).encode("utf-8-sig"),
                            "SYNTHETIC_only_classification_demonstration.csv","text/csv")
     table_and_export(rows)
+    assembly_sources = result.get("assembly_reqs", [])
+    if is_dorchester_352_source(assembly_sources):
+        st.subheader("🧱 Dorchester sample — 352 mm controlled Revit/IFC layer experiment")
+        st.caption("The PDF describes a nominal brick 102 mm + cavity 150 mm + block 100 mm assembly. We compare only declared IFC material layers, not an approximate overall width. No Gemini or Neo4j cost.")
+        dorchester_checks = evaluate_nominal_cavity_352(elements, assembly_sources)
+        dorchester_df = pd.DataFrame(dorchester_checks)
+        if not dorchester_df.empty:
+            st.write("**Dimensional-only observations:**",dorchester_df["ControlledDimensionStatus"].value_counts().to_dict())
+            if (dorchester_df["ControlledDimensionStatus"]=="EVIDENCE_INSUFFICIENT").all():
+                st.info("The current IFC does not establish a three-part brick/cavity/block wall. Overall thickness near 352 mm is insufficient. For a deliberate Revit experiment, preserve the source model and export clearly named three-layer wall types in a separate copy.")
+            st.dataframe(dorchester_df[["GlobalId","WallName","IFCLayerCount",
+                "IFCBrick_mm","IFCCavity_mm","IFCBlock_mm",
+                "BrickDifference_mm","CavityDifference_mm","BlockDifference_mm",
+                "ControlledDimensionStatus","Reason"]],hide_index=True,use_container_width=True)
+            st.download_button("⬇️ Download Dorchester nominal-layer evidence (CSV)",
+                               dorchester_df.to_csv(index=False).encode("utf-8-sig"),
+                               "dorchester_352_controlled_IFC_layer_results.csv","text/csv")
+        st.warning("This is a deliberately controlled test against a sample PDF, NOT evidence the Dorchester contract governs this IFC. Differences from nominal layers are NOT certified building defects. External/internal, damp-proof-course position, storey conditions and finishes still require review.")
     st.subheader("🧱 England AD A §2C8 — controlled cavity-wall layer experiment")
     st.caption("Uses only the IFC's actual material-layer set and the supplied PDF. No extra Gemini or Neo4j calls. Not a real building-compliance assessment.")
     try:
@@ -307,7 +326,8 @@ if result:
                                layer_df.to_csv(index=False).encode("utf-8-sig"),
                                "controlled_england_ad_a_2c8_layer_checks.csv","text/csv")
     else:
-        st.info("The uploaded PDF does not contain an identifiable Section 2C8 passage with both 90 mm leaves and 50 mm cavity thresholds; no UK cavity-wall test is inferred.")
+        if not is_dorchester_352_source(assembly_sources):
+            st.info("This PDF has no verified Approved Document A §2C8 90/50 mm leaf/cavity passage. No Section 2C8 numerical test is inferred.")
 
     st.subheader("🏗️ Assembly requirements vs observed wall thickness — evidence only")
     st.caption("Entire PDF is searched automatically. No Gemini or Neo4j call. Numeric similarity is NOT contractual applicability and the 10 mm discovery window is NOT a permitted tolerance.")
