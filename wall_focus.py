@@ -104,6 +104,54 @@ def wall_numeric_candidates(candidates, limit=25):
     return rows[:limit]
 
 
+def screen_wall_clause_groups(walls, candidates, *, limit=80):
+    """Suggest and screen group-to-clause pairs without claiming verified links.
+
+    Groups minimise repeated comparisons. Group membership does not establish
+    contractual scope; the same property can still have different obligations.
+    No LLM, database writes, or external calls are needed.
+    """
+    groups = {}
+    for element in walls:
+        materials = tuple(sorted(str(m) for m in element.get("Materials", []) if m))
+        key = (str(element.get("Type") or ""), materials,
+               element.get("IsExternal"), str(element.get("Width")))
+        groups.setdefault(key, []).append(element)
+    out = []
+    for group_index, (key, members) in enumerate(sorted(groups.items(), key=lambda g: str(g[0])), 1):
+        representative = members[0]
+        for candidate in candidates[:limit]:
+            if "wall" not in [str(v).casefold() for v in candidate.get("Types", ())]:
+                continue
+            text = str(candidate.get("Text") or "")
+            measurements = wall_thickness_references_mm(text)
+            scope_reason = wall_scope_issue(representative, text)
+            if _PART_NOT_TOTAL.search(text):
+                status = "INCOMPATIBLE_MEASUREMENT"
+                reason = "Partial layer, cavity, lining, or insulation; not a total wall thickness rule"
+            elif not measurements:
+                status = "OTHER_OR_UNCLEAR_REQUIREMENT"
+                reason = "No explicitly supported total wall thickness dimension in this passage"
+            elif scope_reason:
+                status = "SCOPE_UNVERIFIED"
+                reason = scope_reason
+            else:
+                status = "REVIEW_CANDIDATE"
+                reason = "Possible total wall thickness clause; independent document and element-scope verification still required"
+            out.append({
+                "Group": group_index, "IFCType": key[0],
+                "WallCount": len(members),
+                "ExampleGlobalId": str(representative.get("GlobalId") or ""),
+                "ObservedTotalThickness_mm": representative.get("Width"),
+                "ObservedExternal": representative.get("IsExternal"),
+                "PDFPage": candidate.get("Page"),
+                "CandidateText": text[:950],
+                "PossibleTotalThickness_mm": "; ".join(str(x) for x in measurements),
+                "ScreeningStatus": status, "ScreeningReason": reason,
+                "ContractualApplicability": "NOT_VERIFIED",
+            })
+    return out
+
 def comparable_wall_group(walls, anchor):
     """Suggest walls of the same class, material names and external flag.
 
