@@ -15,13 +15,14 @@ import streamlit as st
 
 from audit_engine import AuditRule, MEASUREMENT_TYPES, audit_elements, categories_summary, issue_colour
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
-from spec_context import clause_candidates, candidates_text, adjacent_pdf_context, find_wall_assembly_specifications
+from spec_context import clause_candidates, candidates_text, adjacent_pdf_context, find_wall_assembly_specifications, find_ad_a_2c8_cavity_guidance
 from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256
 from llm_gateway import run_evidence_model, PROVIDER_MODELS, SECRETS
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from link_validation import link_review_worksheet, evaluate_link_review, wall_validation_sample, validate_frozen_review_rows
 from controlled_demo import synthetic_classification_examples
+from controlled_cavity_test import inspect_controlled_cavity_walls
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
@@ -280,6 +281,34 @@ if result:
                            demonstration.to_csv(index=False).encode("utf-8-sig"),
                            "SYNTHETIC_only_classification_demonstration.csv","text/csv")
     table_and_export(rows)
+    st.subheader("🧱 England AD A §2C8 — controlled cavity-wall layer experiment")
+    st.caption("Uses only the IFC's actual material-layer set and the supplied PDF. No extra Gemini or Neo4j calls. Not a real building-compliance assessment.")
+    try:
+        ad_a_rules = find_ad_a_2c8_cavity_guidance(pdf_upload.getvalue())
+    except Exception as exc:
+        ad_a_rules = []
+        st.error(f"Unable to locate Section 2C8 evidence in PDF: {type(exc).__name__}: {exc}")
+    if ad_a_rules:
+        st.write("**Source found:**", [
+            f"PDF page {r['PDFPage']} | {r['Clause']} | leaf >= 90 mm, cavity >= 50 mm"
+            for r in ad_a_rules
+        ])
+        st.warning("These are TWO numerical checks on leaves and cavity, not a 140 mm or 230 mm overall-wall requirement. Section 2C also has building-category, storey, structural and other conditions that this screen does not verify.")
+        layer_checks = inspect_controlled_cavity_walls(elements)
+        layer_df = pd.DataFrame(layer_checks)
+        if not layer_df.empty:
+            st.write("**Material-layer evidence results:**", layer_df["DimensionTestStatus"].value_counts().to_dict())
+            if all(x == "EVIDENCE_INSUFFICIENT" for x in layer_df["DimensionTestStatus"]):
+                st.info("This IFC does not establish three separate masonry/cavity/masonry layers. For a controlled experiment, create a COPY of the Revit file and build a test wall type containing three explicitly named, separately dimensioned layers. Keep the original IFC unchanged.")
+            st.dataframe(layer_df[["GlobalId","WallName","LayerCount",
+                "ObservedLeaf1_mm","ObservedCavity_mm","ObservedLeaf2_mm",
+                "DimensionTestStatus","DimensionIssues"]],hide_index=True,use_container_width=True)
+            st.download_button("⬇️ Export controlled wall-layer measurements (CSV)",
+                               layer_df.to_csv(index=False).encode("utf-8-sig"),
+                               "controlled_england_ad_a_2c8_layer_checks.csv","text/csv")
+    else:
+        st.info("The uploaded PDF does not contain an identifiable Section 2C8 passage with both 90 mm leaves and 50 mm cavity thresholds; no UK cavity-wall test is inferred.")
+
     st.subheader("🏗️ Assembly requirements vs observed wall thickness — evidence only")
     st.caption("Entire PDF is searched automatically. No Gemini or Neo4j call. Numeric similarity is NOT contractual applicability and the 10 mm discovery window is NOT a permitted tolerance.")
     assembly_rows = result.get("assembly_reqs", [])
