@@ -3,10 +3,21 @@
 ## Original supervisor model now has its corresponding DEMONSTRATION PDF
 - User has supplied `Project11.ifc` and the PDF used in the professor demonstration, `Contractual document sample.pdf` (Dorchester Living, 2014).
 - **PDF page 14** describes 352 mm cavity-wall construction (102 mm outer masonry + 150 mm cavity + 100 mm inner block) for conditional two-storey external masonry walls; another facing masonry 352 mm description appears on page 14 and page 15.
-- Original IFC units use feet; 12 wall layer totals near this reference are **350 mm (six)** and **350.04375 mm (six)**. None of the traced material-layer values are 350.4 mm. Cross-check a different property/geometry if the old screenshot displayed 350.4.
+- Original IFC units use feet; 13 wall layer totals near this reference are **350 mm (six)** and **350.04375 mm (seven)**. None of the traced material-layer values are 350.4 mm. Cross-check a different property/geometry if the old screenshot displayed 350.4.
 - The sampled IFC layer associations are single-layer materials; no evidence currently establishes their equivalence to the three-part cavity wall assembly. The IFC project metadata is generic and does not independently establish a Dorchester Living/Heyford Park contract relationship.
 - The standalone `CASE_STUDY_PROJECT11_352MM.md` records the full conditional analysis. The app's new no-cost **full-PDF cavity-wall assembly search** identifies 352 mm as a nominal assembly candidate, not a verified rule for any GlobalId. Do not turn the arithmetic differences into compliance FAIL.
 - Next: live test the exact IFC+PDF with assembly-search UI; then find a genuinely matched project/specification or use a controlled synthetic experiment, and annotate ground truth.
+
+## Test 6 — exact professor demonstration pair (28 October 2026)
+- IFC SHA256 `c60b39389ba3d24e55c504c195af1020a47ebc9e2f1f3ede4802661af6215f85` and PDF SHA256 `16c65cb4cfa42b2e16b31ddc3e98618305e15edb0b316818a3d01725bff4491d`.
+- 103 IFC wall-related objects (76 IfcWallStandardCase, 24 IfcWall and 3 IfcCurtainWall); thickness was resolved for 99 wall objects, one wall unresolved; curtain walls are not treated as a total-wall-thickness class.
+- 211 PDF keyword hits, 55 excerpts selected. Local screening generated 1705 candidate-group combinations: 1240 incompatible measurements and 465 unclear, with **zero automatically accepted links**.
+- Whole-PDF clause search, verified locally against the actual uploaded document, finds **three** 352-mm assembly references: two on PDF page 14 and one on page 15.
+- The 10-mm *display-only* proximity check finds 13 near-350-mm IFC wall observations (six at 350.00 mm, seven at 350.04 mm). They do **not** constitute verified matches to a 352-mm 102+150+100 cavity-wall assembly.
+- Gemini and Neo4j were turned OFF for this run (0 API calls and 0 graph rows), so the run tests extraction/retrieval rather than the graph-LLM pipeline.
+- All 103 remain NOT_ASSESSABLE. The 30-element sample is restricted to wall classes and has no human contract/mismatch labels. Accuracy cannot be calculated.
+- App now **automatically** shows overall-assembly requirements and the numerical-only proximity table, instead of requiring a second hidden button, and reduces repeated screening displays while keeping the full CSV.
+- **Next decisive evidence:** verified project-to-contract relationship and physically comparable element↔assembly mapping, or a clearly described controlled synthetic experiment; then independently annotate mixed-class ground truth and compare baseline vs Graph-RAG.
 
 ## Project target
 Design and evaluate an IFC + project-contract PDF linking prototype using Neo4j-supported Graph-RAG, with traceable candidate retrieval, human applicability verification, deterministic comparisons, and measured precision/recall/F1 against independently checked ground truth.
