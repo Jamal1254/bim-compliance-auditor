@@ -21,6 +21,7 @@ from validation_export import sample_from_current_model, evidence_review_workshe
 from validation import evaluate_records
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch
+from reporting import colour_report_html
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
 
@@ -87,6 +88,9 @@ def table_and_export(rows):
     with two:
         st.download_button("⬇️ Filtered IFC evidence (CSV)", visible.to_csv(index=False).encode("utf-8-sig"),
                            "ifc_evidence_filtered.csv", "text/csv")
+    st.download_button("⬇️ Colour-coded evidence report (HTML)",
+                       colour_report_html(visible.to_dict("records"), title="IFC Evidence Review"),
+                       "ifc_evidence_colour_report.html", "text/html")
 
 
 with st.sidebar:
@@ -321,6 +325,9 @@ if result:
             st.download_button("⬇️ Export reviewer-confirmed wall comparison (CSV)",
                                review_df.to_csv(index=False).encode("utf-8-sig"),
                                "reviewed_wall_comparison.csv","text/csv")
+            st.download_button("⬇️ Colour-coded reviewed wall comparison (HTML)",
+                               colour_report_html(confirmed_rows,title="Reviewer-Confirmed Wall Thickness Comparison"),
+                               "reviewed_wall_comparison_colour.html","text/html")
             st.caption("Comparisons are conditional on the reviewer's applicability assertions; this is not independent verification or overall project certification.")
         elif verified_batch:
             st.info("Review scope or evidence changed. Confirm applicability and run the comparison again.")
