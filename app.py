@@ -296,10 +296,11 @@ if result:
         )
         selected_source = assembly_rows[source_index]
         source_page = selected_source.get("PDFPage")
-        source_quote = str(selected_source.get("QuotedLine") or "")
+        source_quote = str(selected_source.get("SurroundingText") or selected_source.get("QuotedLine") or "")
         source_label = str(selected_source.get("AssemblyKind") or "PDF assembly passage")
         st.write("**Selected PDF passage (suggestion; confirm before use):**")
-        st.write(source_quote)
+        with st.expander("Read source excerpt and surrounding context"):
+            st.write(source_quote)
         st.caption(f"PDF page {source_page}. The software has found a candidate passage; it has not verified that this clause applies to a particular wall.")
     else:
         st.info("No assembly passage was automatically identified. You can still run an experimental comparison by entering a PDF page and pasting the relevant text.")
