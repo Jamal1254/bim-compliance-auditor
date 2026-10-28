@@ -20,7 +20,7 @@ from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from evidence_linking import link_pdf_evidence
-from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch
+from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups
 from reporting import colour_report_html
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
@@ -248,6 +248,22 @@ if result:
                            link_table.to_csv(index=False).encode("utf-8-sig"),
                            "element_pdf_candidate_links.csv","text/csv")
 
+    st.subheader("🔎 Wall-to-PDF candidate screening (local, unverified)")
+    st.caption("Each wall group is checked against PDF excerpts, without further Gemini calls. A candidate is NOT a validated IFC-to-contract link.")
+    wall_screen = [e for e in elements if e.get("Type", "").startswith("IfcWall")]
+    screening = screen_wall_clause_groups(wall_screen, result["candidates"])
+    if screening:
+        screened_df = pd.DataFrame(screening)
+        st.write("**Candidate screening results:**", screened_df["ScreeningStatus"].value_counts().to_dict())
+        st.dataframe(screened_df[["Group","WallCount","ObservedTotalThickness_mm","PDFPage",
+                                   "PossibleTotalThickness_mm","ScreeningStatus","ScreeningReason"]],
+                     hide_index=True,use_container_width=True)
+        st.download_button("⬇️ Export unverified wall–PDF screening (CSV)",
+                           screened_df.to_csv(index=False).encode("utf-8-sig"),
+                           "wall_pdf_screening_unverified.csv","text/csv")
+    else:
+        st.info("No wall-related PDF excerpts available for local clause screening.")
+
     st.subheader("🧱 Wall thickness clause review — single or batch")
     st.caption("All extracted walls remain in the evidence export. This local review does not make additional Gemini calls. Only PDF passages with an explicit thickness-associated dimension can be used for comparison.")
     wall_items = [e for e in elements if e.get("Type", "").startswith("IfcWall")]
@@ -255,7 +271,7 @@ if result:
     if not wall_items:
         st.info("No IFC wall elements in the selected extraction.")
     elif not wall_candidates:
-        st.warning("No clearly stated wall thickness dimension was detected in the selected PDF passages. Building-height thresholds (e.g. 18 m) are not wall thicknesses. Do not force a comparison: inspect the original contract or upload a corresponding specification.")
+        st.warning("No supported TOTAL-wall thickness requirement was detected. Leaf thickness, cavity width and building height cannot be compared to overall IFC wall thickness. Inspect the original contractual specification instead of forcing a result.")
     else:
         chosen_wall_id = st.selectbox("Wall GlobalId", [e["GlobalId"] for e in wall_items],
                                      format_func=lambda gid: f"{gid} — {next((e['Name'] for e in wall_items if e['GlobalId']==gid), '')}")
@@ -272,7 +288,7 @@ if result:
         passage = wall_candidates[idx]
         st.text(passage["Text"])
         options = wall_thickness_references_mm(passage["Text"])
-        st.caption("Extracted wall-thickness candidates only; a reviewer must verify the meaning, scope and applicability of each requirement.")
+        st.caption("Candidates for TOTAL wall thickness only. Requirements for individual leaves, cavity widths, insulation layers, or building-height limits are not offered for this measurement.")
         chosen_value = st.selectbox("Contractual thickness value (mm) — independently identify", options)
         direction = st.selectbox("Meaning of verified clause", ["equal", "minimum", "maximum"],
                                  format_func=lambda x: {"equal":"Exact / nominal", "minimum":"At least (minimum)", "maximum":"At most (maximum)"}[x])
