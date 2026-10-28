@@ -19,6 +19,7 @@ from spec_context import clause_candidates, candidates_text, adjacent_pdf_contex
 from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses_with_status
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
+from link_validation import link_review_worksheet, evaluate_link_review
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
@@ -178,6 +179,11 @@ if run:
                 assembly_reqs = find_wall_assembly_specifications(b_pdf)
                 ranked_links = rank_element_requirement_candidates(
                     elements, assembly_reqs, max_pairs=80)
+                all_elements = extract_file(b_ifc, "All model elements")
+                all_rows = audit_elements(all_elements, None)
+                mixed_sample = sample_from_current_model(all_rows, n=min(30,len(all_rows)),seed=int(seed))
+                mixed_worksheet = evidence_review_worksheet(mixed_sample)
+                top_candidate_review = link_review_worksheet(mixed_sample,ranked_links)
             rows = audit_elements(elements, rule)
             with st.spinner("Linking uploaded IFC GlobalIds to PDF evidence..."):
                 element_links = link_pdf_evidence(b_pdf, elements)
@@ -217,6 +223,7 @@ if run:
                 "elements": elements, "rows": rows, "candidates": candidates, "hit_count":keyword_hits,
                 "element_links": element_links, "pdf_page_count": pdf_page_count,
                 "assembly_reqs": assembly_reqs, "ranked_links": ranked_links,
+                "mixed_worksheet": mixed_worksheet, "link_review_worksheet": top_candidate_review,
                 "graph":graph,"graph_count":graph_count,"graph_error":graph_error,
                 "gemini_text":llm_output,"gemini_error":llm_error,"gemini_model":llm_model if use_llm else None,
                 "gemini_model_used":llm_model_used,"gemini_fallback_used":llm_fallback_used,
@@ -543,6 +550,9 @@ if result:
                        "gemini_model_used","gemini_fallback_used","gemini_attempts")}
     metadata["graph_retrieved_rows"] = len(result["graph"])
     metadata["element_specific_unverified_pairs"] = len(result.get("ranked_links", []))
+    metadata["mixed_class_sample_size"] = len(result.get("mixed_worksheet", []))
+    metadata["top_candidate_review_size"] = len(result.get("link_review_worksheet", []))
+    metadata["independent_link_ground_truth_available"] = False
     metadata["graph_selection_strategy"] = "PDF-relevance-first with diverse IFC fill (40 cap)"
     metadata["ranked_pair_compliance_verdict"] = "NOT_ASSESSABLE"
     metadata["full_pdf_assembly_candidates"] = len(assembly_rows)
