@@ -164,3 +164,35 @@ def find_wall_assembly_specifications(pdf_bytes, max_results=60):
             if len(results) >= max_results:
                 return results
     return results
+
+
+def find_ad_a_2c8_cavity_guidance(pdf_bytes):
+    """Locate source text for a controlled England AD A cavity-wall experiment.
+
+    The combined document can have PDF page numbers unlike the printed page
+    number. Source text must explicitly contain clause 2C8, 90 mm leaves, and
+    50 mm cavity. This does not confirm jurisdiction, project contract, or
+    the many additional requirements in Section 2C.
+    """
+    pages=PdfReader(BytesIO(pdf_bytes)).pages
+    found=[]
+    for index,page in enumerate(pages,1):
+        raw=page.extract_text() or ""
+        cleaned=re.sub(r"\s+"," ",raw).strip()
+        if not re.search(r"\b2C8\b", cleaned, re.I):
+            continue
+        if not (re.search(r"\b(?:leaves?|leaf)\b.{0,130}\b90\s*mm\b",cleaned,re.I)
+                and re.search(r"\b(?:cavit(?:y|ies))\b.{0,110}\b50\s*mm\b",cleaned,re.I)):
+            continue
+        loc=re.search(r"\b2C8\b",cleaned,re.I)
+        snippet=cleaned[loc.start():loc.start()+1000] if loc else cleaned[:1000]
+        found.append({
+            "PDFPage":index,
+            "Clause":"Approved Document A, Section 2C, paragraph 2C8",
+            "MinimumMasonryLeaf_mm":90,
+            "MinimumCavity_mm":50,
+            "SourceText":snippet,
+            "Applicability":"UNVERIFIED_SECTION_2C_CONDITIONS",
+            "MeasurementScope":"INDIVIDUAL_LEAVES_AND_CAVITY_NOT_TOTAL_WALL",
+        })
+    return found
