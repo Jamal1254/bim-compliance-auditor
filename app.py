@@ -22,6 +22,7 @@ from validation import evaluate_records
 from evidence_linking import link_pdf_evidence
 from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
+from assembly_evidence import numerical_wall_assembly_neighbours
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
 
@@ -235,6 +236,43 @@ if result:
         st.warning("User-verified rule comparison only. Other requirements and structural safety remain unassessed.")
     st.write("**Result categories:**", counts)
     table_and_export(rows)
+    st.subheader("🏗️ Assembly requirements vs observed wall thickness — evidence only")
+    st.caption("Entire PDF is searched automatically. No Gemini or Neo4j call. Numeric similarity is NOT contractual applicability and the 10 mm discovery window is NOT a permitted tolerance.")
+    try:
+        assembly_rows = find_wall_assembly_specifications(pdf_upload.getvalue())
+    except Exception as exc:
+        assembly_rows = []
+        st.error(f"Could not read overall cavity-wall assembly references: {type(exc).__name__}: {exc}")
+    if assembly_rows:
+        st.write(f"**{len(assembly_rows)} potential overall cavity-wall/facing-masonry assembly references found in the full PDF.**")
+        assembly_df = pd.DataFrame(assembly_rows)
+        st.dataframe(assembly_df[["PDFPage","AssemblyThickness_mm","AssemblyKind",
+                                   "QuotedLine","ContractualApplicability"]],
+                     hide_index=True, use_container_width=True)
+        st.download_button("⬇️ Export source assembly clauses (CSV)",
+                           assembly_df.to_csv(index=False).encode("utf-8-sig"),
+                           "unverified_wall_assembly_specs.csv", "text/csv")
+        selected_assembly_index = st.selectbox(
+            "Inspect one PDF assembly reference (not a verified rule)",
+            list(range(len(assembly_rows))),
+            format_func=lambda i: f"PDF page {assembly_rows[i]['PDFPage']}: {assembly_rows[i]['AssemblyThickness_mm']:g} mm — {assembly_rows[i]['AssemblyKind']}",
+            key="assembly_selected_index"
+        )
+        selected_assembly = assembly_rows[selected_assembly_index]
+        candidates_numeric = numerical_wall_assembly_neighbours(elements, selected_assembly, window_mm=10.0)
+        st.write(f"**{len(candidates_numeric)} observed IFC walls with numerically similar thickness values (within 10 mm; discovery only).**")
+        if candidates_numeric:
+            neighbour_df = pd.DataFrame(candidates_numeric)
+            st.dataframe(neighbour_df[["GlobalId","WallName","ObservedIFC_mm","PDFNominalAssembly_mm",
+                                       "SignedNumericalDifference_mm","IFCMaterialLayers","ComplianceVerdict"]],
+                         hide_index=True,use_container_width=True)
+            st.download_button("⬇️ Export numeric-only IFC/PDF comparison (CSV)",
+                               neighbour_df.to_csv(index=False).encode("utf-8-sig"),
+                               "ifc_pdf_assembly_numeric_only_NOT_ASSESSABLE.csv","text/csv")
+        st.warning("The PDF describes a wall ASSEMBLY. The model's wall width might describe a single MATERIAL LAYER. Confirm the original project agreement, component composition, wall location and application conditions before any contractual PASS/FAIL.")
+    else:
+        st.info("No explicit overall cavity-wall assembly phrase found; any numeric rule remains unverified.")
+
     st.subheader("🔗 Individual IFC-to-PDF candidate links")
     links = result.get("element_links", [])
     direct = sum(x["EvidenceLevel"]=="EXACT_GLOBALID_CANDIDATE" for x in links)
@@ -254,40 +292,18 @@ if result:
     screening = screen_wall_clause_groups(wall_screen, result["candidates"])
     if screening:
         screened_df = pd.DataFrame(screening)
+        # Display unique PDF evidence by page/text instead of overwhelming the reader
+        # with every wall-type/group cross-product. Full CSV is still available.
+        screening_unique = screened_df.drop_duplicates(subset=["PDFPage","CandidateText","ScreeningStatus"])
         st.write("**Candidate screening results:**", screened_df["ScreeningStatus"].value_counts().to_dict())
-        st.dataframe(screened_df[["Group","WallCount","ObservedTotalThickness_mm","PDFPage",
-                                   "PossibleTotalThickness_mm","SuggestedOperator","ScreeningStatus","ScreeningReason"]],
+        st.caption(f"{len(screening_unique)} unique page/passage/status findings shown (vs {len(screened_df)} group combinations in full CSV).")
+        st.dataframe(screening_unique[["PDFPage","PossibleTotalThickness_mm","SuggestedOperator","ScreeningStatus","ScreeningReason","CandidateText"]],
                      hide_index=True,use_container_width=True)
         st.download_button("⬇️ Export unverified wall–PDF screening (CSV)",
                            screened_df.to_csv(index=False).encode("utf-8-sig"),
                            "wall_pdf_screening_unverified.csv","text/csv")
     else:
         st.info("No wall-related PDF excerpts available for local clause screening.")
-
-    st.subheader("🏗️ Cavity-wall assembly specifications (full PDF search)")
-    st.caption("Searches ALL PDF pages locally for explicit overall cavity-wall or facing-masonry assembly thickness. These are not yet verified IFC-to-contract links. A single 350-mm masonry layer cannot be assumed to be the same physical quantity as a multi-layer 352-mm cavity-wall assembly.")
-    if st.button("Find wall-assembly specifications throughout full PDF (no API cost)", key="assembly_search"):
-        try:
-            assembly_found = find_wall_assembly_specifications(pdf_upload.getvalue())
-            st.session_state["assembly_spec_search"] = {
-                "pdf_sha": result["PDF_SHA256"], "records": assembly_found
-            }
-        except Exception as exc:
-            st.error(f"Full PDF assembly scan failed: {type(exc).__name__}: {exc}")
-    assembly_search = st.session_state.get("assembly_spec_search")
-    if assembly_search and assembly_search.get("pdf_sha") == result["PDF_SHA256"]:
-        assembly_rows = assembly_search["records"]
-        if assembly_rows:
-            assembly_df = pd.DataFrame(assembly_rows)
-            st.dataframe(assembly_df[["PDFPage","AssemblyThickness_mm","AssemblyKind",
-                                      "QuotedLine","ComparisonMeaning","ContractualApplicability"]],
-                         hide_index=True, use_container_width=True)
-            st.download_button("⬇️ Download unverified PDF assembly clauses (CSV)",
-                               assembly_df.to_csv(index=False).encode("utf-8-sig"),
-                               "pdf_wall_assembly_candidates_unverified.csv", "text/csv")
-            st.warning("The source's assembly thickness may include separate cavity, brick and block layers; verify full scope and IFC layer composition before any element-level comparison.")
-        else:
-            st.info("No explicit cavity-wall assembly thickness phrases were found in this PDF.")
 
     st.subheader("🧱 Wall thickness clause review — single or batch")
     st.caption("All extracted walls remain in the evidence export. This local review does not make additional Gemini calls. Only PDF passages with an explicit thickness-associated dimension can be used for comparison.")
