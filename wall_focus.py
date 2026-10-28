@@ -35,12 +35,73 @@ def numeric_references_mm(text):
     return found
 
 
+def wall_thickness_references_mm(text):
+    """Conservative candidates for wall *thickness*, not unrelated building height.
+
+    A number is not a thickness merely because it appears in a wall-related
+    paragraph. The human reviewer still has to confirm the clause.
+    """
+    supported = []
+    for sentence in re.split(r"(?<=[.;])\\s+|[\\r\\n]+", text or ""):
+        positions = [m.start() for m in re.finditer(r"\\b(?:thickness|thick)\\b", sentence, re.I)]
+        if not positions:
+            continue
+        for match in _LENGTH.finditer(sentence):
+            before = sentence[max(0, match.start()-55):match.start()].casefold()
+            after = sentence[match.end():match.end()+40].casefold()
+            context = before + " " + after
+            if min(abs(p-match.start()) for p in positions) > 75:
+                continue
+            # These often express building height, not physical wall thickness.
+            if re.search(r"\\b(?:height|high|tall|storey|stories|above ground)\\b", context):
+                continue
+            # A tolerance or a table reference is not the actual requirement.
+            if re.search(r"\\b(?:tolerance|deviation|difference|table\\s*\\d+)\\b", context):
+                continue
+            if re.search(r"(?:[±]|\\+/-|\\-\\s*)\\s*$", before):
+                continue
+            numeric = numeric_references_mm(match.group(0))
+            if numeric and numeric[0] <= 2000 and numeric[0] not in supported:
+                supported.append(numeric[0])
+    return supported
+
+
 def wall_numeric_candidates(candidates, limit=25):
-    """Keep traceable wall-category fragments containing numeric dimensions."""
+    """Only wall passages containing an explicitly thickness-associated dimension."""
     rows = [c for c in candidates
             if "wall" in [str(x).casefold() for x in c.get("Types", ())]
-            and numeric_references_mm(c.get("Text", ""))]
+            and wall_thickness_references_mm(c.get("Text", ""))]
     return rows[:limit]
+
+
+def comparable_wall_group(walls, anchor):
+    """Suggest walls of the same class, material names and external flag.
+
+    Grouping is ONLY a reviewer aid, never proof of shared contractual scope.
+    """
+    def signature(e):
+        names = [re.sub(r"\\s*\\(\\s*\\d+(?:\\.\\d+)?\\s*mm\\s*\\)", "", str(m)).strip().casefold()
+                 for m in e.get("Materials", [])]
+        return (e.get("Type"), tuple(sorted(names)), e.get("IsExternal"))
+    sig = signature(anchor)
+    return [e for e in walls if signature(e) == sig]
+
+
+def review_wall_batch(walls, candidate, required_mm, comparison, tolerance_mm, *,
+                      document_confirmed=False, clause_confirmed=False,
+                      batch_scope_confirmed=False):
+    """Deterministically compare selected walls using one independently verified clause."""
+    items = list(walls)
+    if not items:
+        raise ValueError("Select at least one wall.")
+    ids = [str(e.get("GlobalId") or "") for e in items]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Selected walls include duplicate GlobalIds.")
+    if len(items) > 1 and not batch_scope_confirmed:
+        raise ValueError("Confirm applicability to every selected wall before batch comparison.")
+    return [review_wall_clause(e, candidate, required_mm, comparison, tolerance_mm,
+                               document_confirmed=document_confirmed,
+                               clause_confirmed=clause_confirmed) for e in items]
 
 
 def review_wall_clause(wall, candidate, required_mm, comparison, tolerance_mm, *,
@@ -60,9 +121,9 @@ def review_wall_clause(wall, candidate, required_mm, comparison, tolerance_mm, *
         tolerance_mm = float(tolerance_mm)
     except (TypeError, ValueError) as exc:
         raise ValueError("Enter a valid requirement and tolerance.") from exc
-    values = numeric_references_mm(text)
+    values = wall_thickness_references_mm(text)
     if not any(abs(x-required_mm) < 0.001 for x in values):
-        raise ValueError("Selected dimension does not appear in the cited PDF extract.")
+        raise ValueError("Selected dimension is not explicitly supported as a wall thickness in this PDF passage.")
     rule = AuditRule(
         thickness_mm=required_mm, tolerance_mm=tolerance_mm,
         scope="global_id", global_id=str(wall["GlobalId"]),
