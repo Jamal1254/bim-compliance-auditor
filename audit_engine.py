@@ -26,10 +26,13 @@ class AuditRule:
     source: str = ""
     test_mode: bool = True
     metric: str = "Wall thickness"
+    comparison: str = "equal"  # equal / minimum / maximum
 
     def __post_init__(self):
         if self.metric not in MEASUREMENT_TYPES:
             raise ValueError("Unsupported measurement type")
+        if self.comparison not in {"equal", "minimum", "maximum"}:
+            raise ValueError("Unsupported comparison operator")
         if not math.isfinite(self.thickness_mm) or self.thickness_mm <= 0 or not math.isfinite(self.tolerance_mm) or self.tolerance_mm < 0:
             raise ValueError("Reference must be positive and tolerance finite and nonnegative")
         if self.scope not in {"external", "all", "name_contains", "global_id"}:
@@ -99,6 +102,7 @@ def audit_elements(elements, rule):
             "CavityWidth": str(e.get("CavityWidth") or "Not established"),
             "RequiredThickness_mm": rule.thickness_mm if rule else None,
             "Tolerance_mm": rule.tolerance_mm if rule else None,
+            "ComparisonOperator": rule.comparison if rule else "",
             "RequiredMaterials": "; ".join(rule.required_materials) if rule else "",
             "EvidenceReference": rule.source if rule else "",
             "ComparisonMode": "CONTROLLED_TEST" if rule and rule.test_mode else "USER_VERIFIED_RULE" if rule else "UNVERIFIED",
@@ -135,14 +139,21 @@ def audit_elements(elements, rule):
                        Explanation="Material associations not available; not proof of physical noncompliance")
             rows.append(row); continue
         delta = round(val - rule.thickness_mm, 4)
-        geometry_fail = abs(delta) > rule.tolerance_mm + 1e-9
+        # Nominal dimensions use equality; minimum/maximum clauses are directional.
+        # A tolerance is a permitted allowance in the unfavorable direction only.
+        if rule.comparison == "minimum":
+            geometry_fail = val < rule.thickness_mm - rule.tolerance_mm - 1e-9
+        elif rule.comparison == "maximum":
+            geometry_fail = val > rule.thickness_mm + rule.tolerance_mm + 1e-9
+        else:
+            geometry_fail = abs(delta) > rule.tolerance_mm + 1e-9
         material_text = " ".join(materials).casefold()
         material_fail = any(w.casefold() not in material_text for w in rule.required_materials)
         category = "MISMATCH_BOTH" if geometry_fail and material_fail else "GEOMETRY_MISMATCH" if geometry_fail else "MATERIAL_MISMATCH" if material_fail else "PASS"
         row.update(
             ThicknessDifference_mm=delta, IssueCategory=category,
             Severity="None" if category == "PASS" else "Manual review",
-            Explanation=f"{rule.metric}: observed {val:g} mm, reference {rule.thickness_mm:g} mm, tolerance ±{rule.tolerance_mm:g} mm. " +
+            Explanation=f"{rule.metric}: observed {val:g} mm, {rule.comparison} reference {rule.thickness_mm:g} mm, tolerance {rule.tolerance_mm:g} mm. " +
             ("Text-token material test included." if rule.required_materials else "Materials not compared.")
         )
         rows.append(row)
