@@ -140,7 +140,7 @@ with st.sidebar:
             st.info("Synthetic threshold tests prove software behaviour only, not real contractual compliance.")
     st.subheader("2. Optional modules")
     with_graph = st.checkbox("Retrieve model-isolated Neo4j graph evidence", value=False)
-    use_llm = st.checkbox("Gemini — suggest PDF clauses (unverified)", value=False)
+    use_llm = st.checkbox("LLM — suggest PDF clauses (Gemini default, unverified)", value=False)
     llm_provider = "Gemini"
     llm_model = "gemini-2.5-flash"
     prompt_variant = next(iter(PROMPT_VARIANTS))
@@ -468,16 +468,6 @@ if result:
         elif verified_batch:
             st.info("Review scope or evidence changed. Confirm applicability and run the comparison again.")
 
-    sample = sample_from_current_model(rows, n=min(30,len(rows)), seed=result["sampling_seed"])
-    sheet = evidence_review_worksheet(sample)
-    st.subheader(f"🧪 This IFC's reproducible validation sample: {len(sheet)} elements")
-    if len({r.get("IFCType") for r in sample}) < 2:
-        st.warning("This sample contains only ONE IFC class because the extraction filter is Wall. It cannot establish performance differences across element types. Use the optional mixed-element sample below.")
-    st.caption(f"Ground-truth entries completed: 0 of {len(sheet)} (new sample; labels intentionally left blank).")
-    st.caption("Generated from the CURRENT uploaded IFC (not pre-stored IDs). Sampled categories are balanced where available. "
-               "All contractual truth fields are blank pending an independent reviewer.")
-    st.download_button("⬇️ Download current-model ground-truth worksheet (CSV)",
-                       validation_csv(sheet).encode("utf-8-sig"), "ground_truth_for_uploaded_ifc.csv","text/csv")
     st.subheader("📋 Independent wall-link validation and mixed-class coverage")
     mixed_rows = result.get("mixed_worksheet", [])
     if mixed_rows:
@@ -582,6 +572,7 @@ if result:
                        "gemini_model_used","gemini_fallback_used","gemini_attempts")}
     metadata["graph_retrieved_rows"] = len(result["graph"])
     metadata["element_specific_unverified_pairs"] = len(result.get("ranked_links", []))
+    metadata["llm_requested"] = bool(result["gemini_requested"])
     metadata["mixed_class_sample_size"] = len(result.get("mixed_worksheet", []))
     metadata["top_candidate_review_size"] = len(result.get("link_review_worksheet", []))
     metadata["wall_validation_design"] = "evidence-stratified selected/unselected walls"
