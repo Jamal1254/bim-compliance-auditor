@@ -176,7 +176,12 @@ if run:
             llm_output, llm_error, prompt_hash = "", "", ""
             llm_model_used, llm_fallback_used, llm_attempts = None, False, 0
             if use_llm:
-                excerpts = candidates_text(candidates[:25])
+                # Rank thickness-specific wall evidence first, independent of PDF page order.
+                ai_candidates = sorted(candidates, key=lambda c: (
+                    not bool(wall_thickness_references_mm(c.get("Text", ""))),
+                    -int(c.get("Score", 0)), int(c.get("Page", 0))
+                ))[:25]
+                excerpts = candidates_text(ai_candidates)
                 selected_graph = json.dumps(graph[:8], ensure_ascii=False, default=str)
                 prompt = prompt_for(", ".join(actual_classes), excerpts, prompt_variant, selected_graph)
                 prompt_hash = prompt_sha256(prompt)
@@ -365,7 +370,11 @@ if result:
             graph_context=json.dumps(result["graph"][:8],ensure_ascii=False,default=str)
             pages=set(range(1,result["pdf_page_count"]+1))
             for variant in PROMPT_VARIANTS:
-                p=prompt_for(", ".join(result["classes"]),candidates_text(result["candidates"][:25]),variant,graph_context)
+                relevant = sorted(result["candidates"], key=lambda c: (
+                    not bool(wall_thickness_references_mm(c.get("Text", ""))),
+                    -int(c.get("Score", 0)), int(c.get("Page", 0))
+                ))[:25]
+                p=prompt_for(", ".join(result["classes"]),candidates_text(relevant),variant,graph_context)
                 for repeat in (1,2):
                     with st.spinner(f"Prompt {variant}, repeat {repeat}/2..."):
                         try:
