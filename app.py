@@ -20,7 +20,7 @@ from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from evidence_linking import link_pdf_evidence
-from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups
+from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch, screen_wall_clause_groups, comparison_hint
 from reporting import colour_report_html
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
@@ -256,7 +256,7 @@ if result:
         screened_df = pd.DataFrame(screening)
         st.write("**Candidate screening results:**", screened_df["ScreeningStatus"].value_counts().to_dict())
         st.dataframe(screened_df[["Group","WallCount","ObservedTotalThickness_mm","PDFPage",
-                                   "PossibleTotalThickness_mm","ScreeningStatus","ScreeningReason"]],
+                                   "PossibleTotalThickness_mm","SuggestedOperator","ScreeningStatus","ScreeningReason"]],
                      hide_index=True,use_container_width=True)
         st.download_button("⬇️ Export unverified wall–PDF screening (CSV)",
                            screened_df.to_csv(index=False).encode("utf-8-sig"),
@@ -290,7 +290,15 @@ if result:
         options = wall_thickness_references_mm(passage["Text"])
         st.caption("Candidates for TOTAL wall thickness only. Requirements for individual leaves, cavity widths, insulation layers, or building-height limits are not offered for this measurement.")
         chosen_value = st.selectbox("Contractual thickness value (mm) — independently identify", options)
-        direction = st.selectbox("Meaning of verified clause", ["equal", "minimum", "maximum"],
+        hint = comparison_hint(passage["Text"])
+        if hint:
+            st.info(f"Source-language clue: this excerpt describes a {hint.upper()} limit. Confirm against the entire clause and its scope before any comparison.")
+        else:
+            st.warning("The excerpt does not establish a clear minimum or maximum. Check the full clause to determine whether it is exact, minimum or maximum.")
+        directions = ["minimum", "maximum", "equal"] if hint == "minimum" else (
+            ["maximum", "minimum", "equal"] if hint == "maximum" else
+            ["equal", "minimum", "maximum"])
+        direction = st.selectbox("Meaning of verified clause (must agree with the source)", directions,
                                  format_func=lambda x: {"equal":"Exact / nominal", "minimum":"At least (minimum)", "maximum":"At most (maximum)"}[x])
         allowed = st.number_input("Verified permitted tolerance (mm)", min_value=0.0, value=0.0, step=0.1)
         selection_mode = st.radio("Apply the reviewer-verified clause to", [
@@ -351,10 +359,37 @@ if result:
     sample = sample_from_current_model(rows, n=min(30,len(rows)), seed=result["sampling_seed"])
     sheet = evidence_review_worksheet(sample)
     st.subheader(f"🧪 This IFC's reproducible validation sample: {len(sheet)} elements")
+    if len({r.get("IFCType") for r in sample}) < 2:
+        st.warning("This sample contains only ONE IFC class because the extraction filter is Wall. It cannot establish performance differences across element types. Use the optional mixed-element sample below.")
+    st.caption(f"Ground-truth entries completed: 0 of {len(sheet)} (new sample; labels intentionally left blank).")
     st.caption("Generated from the CURRENT uploaded IFC (not pre-stored IDs). Sampled categories are balanced where available. "
                "All contractual truth fields are blank pending an independent reviewer.")
     st.download_button("⬇️ Download current-model ground-truth worksheet (CSV)",
                        validation_csv(sheet).encode("utf-8-sig"), "ground_truth_for_uploaded_ifc.csv","text/csv")
+    st.subheader("📋 Mixed-element validation sample — optional, local only")
+    st.caption("The supervisor requested 25–30 diverse IFC elements. This action reads all element classes from the SAME uploaded IFC without calling Gemini or Neo4j; the wall-first analysis remains unchanged.")
+    if st.button("Generate 30-element mixed-class sample from this IFC (no API cost)", key="mixed_sample"):
+        try:
+            all_project_elements = extract_file(ifc_upload.getvalue(), "All model elements")
+            all_review_rows = audit_elements(all_project_elements, None)
+            mixed_sample = sample_from_current_model(all_review_rows, n=min(30,len(all_review_rows)), seed=result["sampling_seed"])
+            st.session_state["mixed_ground_truth"] = {
+                "ifc_hash": result["IFC_SHA256"],
+                "seed": result["sampling_seed"],
+                "worksheet": evidence_review_worksheet(mixed_sample),
+            }
+        except Exception as exc:
+            st.error(f"Mixed sample failed: {type(exc).__name__}: {exc}")
+    mixed = st.session_state.get("mixed_ground_truth")
+    if (mixed and mixed["ifc_hash"] == result["IFC_SHA256"]
+            and mixed["seed"] == result["sampling_seed"]):
+        mixed_df = pd.DataFrame(mixed["worksheet"])
+        st.write("**Sample class distribution:**", mixed_df["SampleIFCType"].value_counts().to_dict())
+        st.download_button("⬇️ Download mixed-class ground-truth worksheet (CSV)",
+                           validation_csv(mixed["worksheet"]).encode("utf-8-sig"),
+                           "ground_truth_mixed_elements.csv","text/csv")
+        st.caption("Independent ground truth remains BLANK. Random sampling and larger class diversity do not establish compliance or statistical accuracy.")
+
     reviewed = st.file_uploader("Optional: upload manually reviewed/labelled worksheet to calculate metrics",type=["csv"],key="reviewed_truth")
     if reviewed is not None:
         try:
