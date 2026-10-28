@@ -1,13 +1,13 @@
 """Wall-first workflow regression tests; no live credentials required."""
 import pytest
-from wall_focus import numeric_references_mm,wall_numeric_candidates,wall_thickness_references_mm,comparable_wall_group,review_wall_clause,review_wall_batch
+from wall_focus import numeric_references_mm,wall_numeric_candidates,wall_thickness_references_mm,wall_scope_issue,comparable_wall_group,review_wall_clause,review_wall_batch
 
 def wall(width=352):
     return {"GlobalId":"sample-wall","Type":"IfcWallStandardCase","Name":"W1",
             "Width":width,"WidthSource":"IfcMaterialLayerSet total","MeasurementQuality":"DECLARED",
             "Materials":["Masonry"],"IsExternal":False}
 
-def passage(text="External wall total thickness shall be at least 352 mm."):
+def passage(text="Wall total thickness shall be at least 352 mm."):
     return {"Page":12,"Text":text,"Types":["wall"],"Score":13}
 
 def test_explicit_mm_conversion():
@@ -75,3 +75,38 @@ def test_batch_verification_and_scope():
                               document_confirmed=True,clause_confirmed=True,
                               batch_scope_confirmed=True)
     assert [x["IssueCategory"] for x in checked] == ["PASS","GEOMETRY_MISMATCH"]
+
+
+def test_pdf_leaf_and_cavity_requirements_never_become_total_wall_thickness():
+    text = ("blockwork: All cavity walls should have leaves at least 90mm thick "
+            "and cavities at least 50mm wide. The wall ties should have a horizontal")
+    assert wall_thickness_references_mm(text) == []
+    assert wall_numeric_candidates([{"Page": 9, "Text": text, "Types": ["wall"]}]) == []
+    with pytest.raises(ValueError, match="not explicitly supported|Clause scope"):
+        review_wall_clause(wall(100), {"Page":9,"Text":text,"Types":["wall"]},
+                           90, "minimum", 0, document_confirmed=True, clause_confirmed=True)
+
+
+def test_external_scope_mismatch_not_silently_passed():
+    external_passage = passage("External wall total thickness must be at least 100 mm.")
+    assert "internal" in wall_scope_issue(wall(100), external_passage["Text"])
+    with pytest.raises(ValueError, match="Clause scope"):
+        review_wall_clause(wall(100), external_passage, 100, "minimum", 0,
+                           document_confirmed=True, clause_confirmed=True)
+    external_wall = dict(wall(100),IsExternal=True)
+    assert review_wall_clause(external_wall, external_passage, 100, "minimum", 0,
+                              document_confirmed=True, clause_confirmed=True)["IssueCategory"] == "PASS"
+
+
+def test_load_bearing_scope_requires_specific_classification():
+    statement = passage("Load-bearing masonry wall thickness shall be at least 150 mm.")
+    assert "Load-bearing" in wall_scope_issue(wall(150), statement["Text"])
+    with pytest.raises(ValueError, match="Load-bearing"):
+        review_wall_clause(wall(150), statement, 150, "minimum", 0,
+                           document_confirmed=True, clause_confirmed=True)
+
+
+def test_reject_layer_partial_thickness_with_numeric_total_same_fragment():
+    mixed = "Wall leaf thickness 90 mm. Masonry cavity width 50 mm."
+    assert wall_thickness_references_mm(mixed) == []
+    assert wall_thickness_references_mm("All masonry walls require a minimum TOTAL wall thickness of 150 mm.") == [150]
