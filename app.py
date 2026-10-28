@@ -20,7 +20,7 @@ from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
 from evidence_linking import link_pdf_evidence
-from wall_focus import wall_numeric_candidates, numeric_references_mm, review_wall_clause
+from wall_focus import wall_numeric_candidates, wall_thickness_references_mm, comparable_wall_group, review_wall_batch
 from prompt_repeatability import record_output, summarise_repeats
 from pypdf import PdfReader
 
@@ -239,21 +239,20 @@ if result:
                            link_table.to_csv(index=False).encode("utf-8-sig"),
                            "element_pdf_candidate_links.csv","text/csv")
 
-    st.subheader("🧱 One-wall contractual evidence review")
-    st.caption("Select one extracted IFC wall and one PDF search excerpt. A reviewer must verify project applicability, clause scope and the meaning of the measurement. No rule is inferred automatically.")
-    wall_items = [e for e in elements if e.get("Type","").startswith("IfcWall")]
+    st.subheader("🧱 Wall thickness clause review — single or batch")
+    st.caption("All extracted walls remain in the evidence export. This local review does not make additional Gemini calls. Only PDF passages with an explicit thickness-associated dimension can be used for comparison.")
+    wall_items = [e for e in elements if e.get("Type", "").startswith("IfcWall")]
     wall_candidates = wall_numeric_candidates(result["candidates"])
     if not wall_items:
-        st.info("No wall elements in this IFC selection.")
+        st.info("No IFC wall elements in the selected extraction.")
     elif not wall_candidates:
-        st.info("No wall-related PDF passages with explicit dimension tokens in the selected search extracts. Review full PDF candidates or use a corresponding specification.")
+        st.warning("No clearly stated wall thickness dimension was detected in the selected PDF passages. Building-height thresholds (e.g. 18 m) are not wall thicknesses. Do not force a comparison: inspect the original contract or upload a corresponding specification.")
     else:
         chosen_wall_id = st.selectbox("Wall GlobalId", [e["GlobalId"] for e in wall_items],
                                      format_func=lambda gid: f"{gid} — {next((e['Name'] for e in wall_items if e['GlobalId']==gid), '')}")
         chosen_wall = next(e for e in wall_items if e["GlobalId"] == chosen_wall_id)
         st.write("**IFC evidence:**", {
-            "GlobalId": chosen_wall_id,
-            "Thickness_mm": chosen_wall.get("Width"),
+            "GlobalId": chosen_wall_id, "Thickness_mm": chosen_wall.get("Width"),
             "ThicknessSource": chosen_wall.get("WidthSource"),
             "MeasurementQuality": chosen_wall.get("MeasurementQuality"),
             "Materials": chosen_wall.get("Materials"),
@@ -263,31 +262,63 @@ if result:
                            format_func=lambda i: f"PDF page {wall_candidates[i]['Page']} | {wall_candidates[i]['Text'][:110]}")
         passage = wall_candidates[idx]
         st.text(passage["Text"])
-        options = numeric_references_mm(passage["Text"])
-        st.caption("Numeric tokens converted to mm from this PDF passage. These are NOT automatically classified as wall thickness.")
+        options = wall_thickness_references_mm(passage["Text"])
+        st.caption("Extracted wall-thickness candidates only; a reviewer must verify the meaning, scope and applicability of each requirement.")
         chosen_value = st.selectbox("Contractual thickness value (mm) — independently identify", options)
-        direction = st.selectbox("Meaning of the verified clause", ["equal", "minimum", "maximum"],
+        direction = st.selectbox("Meaning of verified clause", ["equal", "minimum", "maximum"],
                                  format_func=lambda x: {"equal":"Exact / nominal", "minimum":"At least (minimum)", "maximum":"At most (maximum)"}[x])
         allowed = st.number_input("Verified permitted tolerance (mm)", min_value=0.0, value=0.0, step=0.1)
+        selection_mode = st.radio("Apply the reviewer-verified clause to", [
+            "Selected wall only", "Same IFC type and material (candidate group)",
+            "Manually selected GlobalIds"
+        ])
+        if selection_mode == "Selected wall only":
+            chosen_walls = [chosen_wall]
+        elif selection_mode == "Same IFC type and material (candidate group)":
+            chosen_walls = comparable_wall_group(wall_items, chosen_wall)
+        else:
+            selected_ids = st.multiselect("Select wall GlobalIds", [e["GlobalId"] for e in wall_items],
+                                          default=[chosen_wall_id])
+            ids = set(selected_ids)
+            chosen_walls = [e for e in wall_items if e["GlobalId"] in ids]
+        st.write(f"**Walls selected for local comparison:** {len(chosen_walls)} of {len(wall_items)}")
+        st.caption("Matching wall type/material is NOT evidence that a clause covers every element. Mixed observed thicknesses are deliberately not hidden.")
         doc_ok = st.checkbox("I independently confirmed this PDF belongs to the IFC project", key="wall_doc_verified")
-        clause_ok = st.checkbox("I verified this passage explicitly governs the selected wall's total thickness and confirmed its scope", key="wall_clause_verified")
-        if st.button("Compare this wall with the verified clause", key="compare_wall", disabled=not (doc_ok and clause_ok)):
+        clause_ok = st.checkbox("I independently verified this clause governs total wall thickness, and confirmed the wall category and exceptions", key="wall_clause_verified")
+        batch_ok = len(chosen_walls) == 1 or st.checkbox(
+            "I independently verified that the clause applies to EVERY wall in the selected group",
+            key="wall_batch_verified")
+        selection_ids = sorted(e["GlobalId"] for e in chosen_walls)
+        review_key = hashlib.sha256(json.dumps({
+            "ifc":result["IFC_SHA256"],"pdf":result["PDF_SHA256"],"ids":selection_ids,
+            "passage":passage,"reference_mm":chosen_value,"operator":direction,"tolerance":allowed,
+        },sort_keys=True,default=str).encode()).hexdigest()
+        if st.button("Compare selected walls using independently verified requirement", key="compare_walls",
+                     disabled=not (doc_ok and clause_ok and batch_ok and chosen_walls)):
             try:
-                checked = review_wall_clause(chosen_wall,passage,chosen_value,direction,allowed,
-                                             document_confirmed=doc_ok,clause_confirmed=clause_ok)
-                st.session_state["single_wall_review"] = dict(
-                    checked, IFC_SHA256=result["IFC_SHA256"],PDF_SHA256=result["PDF_SHA256"])
+                checked = review_wall_batch(chosen_walls,passage,chosen_value,direction,allowed,
+                                            document_confirmed=doc_ok,clause_confirmed=clause_ok,
+                                            batch_scope_confirmed=batch_ok)
+                st.session_state["reviewed_wall_batch"] = {"key":review_key,"rows":checked}
             except ValueError as exc:
                 st.error(str(exc))
-        verified_row = st.session_state.get("single_wall_review")
-        if verified_row and verified_row.get("IFC_SHA256")==result["IFC_SHA256"] and verified_row.get("PDF_SHA256")==result["PDF_SHA256"] and verified_row.get("GlobalId")==chosen_wall_id and verified_row.get("PDFPage")==passage["Page"] and verified_row.get("RequiredThickness_mm")==chosen_value and verified_row.get("ComparisonOperator")==direction and verified_row.get("Tolerance_mm")==allowed:
-            st.write("**Single-wall reviewed outcome:**", verified_row["IssueCategory"])
-            st.caption(verified_row["Explanation"])
-            st.download_button("⬇️ Download evidence-backed wall review (JSON)",
-                               json.dumps(verified_row,indent=2,ensure_ascii=False,default=str),
-                               "verified_single_wall_comparison.json","application/json")
-        elif verified_row:
-            st.caption("The inputs changed; run the comparison again for an updated reviewed outcome.")
+        verified_batch = st.session_state.get("reviewed_wall_batch")
+        if verified_batch and verified_batch.get("key")==review_key and doc_ok and clause_ok and batch_ok:
+            confirmed_rows = verified_batch["rows"]
+            review_df = pd.DataFrame(confirmed_rows)
+            st.write("**Reviewer-confirmed, element-level outcomes:**")
+            st.write(review_df["IssueCategory"].value_counts().to_dict())
+            cols = ["GlobalId","ElementName","ObservedThickness_mm","RequiredThickness_mm",
+                    "ComparisonOperator","IssueCategory","PDFPage","ThicknessSource"]
+            st.dataframe(review_df[cols].style.map(
+                lambda v: f"background-color: {issue_colour(str(v))}", subset=["IssueCategory"]),
+                hide_index=True,use_container_width=True)
+            st.download_button("⬇️ Export reviewer-confirmed wall comparison (CSV)",
+                               review_df.to_csv(index=False).encode("utf-8-sig"),
+                               "reviewed_wall_comparison.csv","text/csv")
+            st.caption("Comparisons are conditional on the reviewer's applicability assertions; this is not independent verification or overall project certification.")
+        elif verified_batch:
+            st.info("Review scope or evidence changed. Confirm applicability and run the comparison again.")
 
     sample = sample_from_current_model(rows, n=min(30,len(rows)), seed=result["sampling_seed"])
     sheet = evidence_review_worksheet(sample)
