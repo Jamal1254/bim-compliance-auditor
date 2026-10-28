@@ -13,5 +13,5 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install pytest 'pypdf>=5,<7'
-      - run: python -m compileall -q app.py audit_engine.py check_ifc_compliance.py spec_context.py ifc_to_neo4j.py llm_assistance.py validation_export.py evidence_linking.py prompt_repeatability.py wall_focus.py reporting.py assembly_evidence.py semantic_links.py
-      - run: pytest -q tests/test_v4_portability.py tests/test_gemini_reliability.py tests/test_supervisor_closure.py tests/test_wall_focus.py tests/test_reporting.py tests/test_pdf_context.py tests/test_assembly_evidence.py tests/test_semantic_links.py
+      - run: python -m compileall -q app.py audit_engine.py check_ifc_compliance.py spec_context.py ifc_to_neo4j.py llm_assistance.py validation_export.py evidence_linking.py prompt_repeatability.py wall_focus.py reporting.py assembly_evidence.py semantic_links.py link_validation.py
+      - run: pytest -q tests/test_v4_portability.py tests/test_gemini_reliability.py tests/test_supervisor_closure.py tests/test_wall_focus.py tests/test_reporting.py tests/test_pdf_context.py tests/test_assembly_evidence.py tests/test_semantic_links.py tests/test_link_validation.py
