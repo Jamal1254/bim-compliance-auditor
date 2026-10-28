@@ -35,36 +35,66 @@ def numeric_references_mm(text):
     return found
 
 
+_PART_NOT_TOTAL = re.compile(
+    r"\b(?:leaf|leaves|wythe|wythes|cavity|cavities|air\s*gap|insulation|"
+    r"lining|plaster|render|cladding|wall\s*tie|"
+    r"building\s*height|storey\s*height|story\s*height)\b",
+    re.IGNORECASE,
+)
+_NON_THICKNESS = re.compile(
+    r"\b(?:height|high|tall|storey|stories|above\s*ground|"
+    r"tolerance|deviation|difference|table\s*\d+)\b",
+    re.IGNORECASE,
+)
+
+
 def wall_thickness_references_mm(text):
-    """Conservative candidates for wall *thickness*, not unrelated building height.
+    """Conservatively propose dimensions of the *whole wall* only.
 
-    A number is not a thickness merely because it appears in a wall-related
-    paragraph. The human reviewer still has to confirm the clause.
+    Refuse to treat cavity widths, masonry leaves, insulating layers, and
+    building heights as an observed wall's total thickness. A candidate
+    still needs independent confirmation of contractual applicability.
     """
-    supported = []
+    found = []
     for sentence in re.split(r"(?<=[.;])\s+|[\r\n]+", text or ""):
-        positions = [m.start() for m in re.finditer(r"\b(?:thickness|thick)\b", sentence, re.I)]
-        if not positions:
+        low = sentence.casefold()
+        # False negatives are safer here than comparing incompatible
+        # physical quantities, e.g. 90-mm leaves vs 100-mm total walls.
+        if _PART_NOT_TOTAL.search(low) or _NON_THICKNESS.search(low):
             continue
+        if not re.search(r"\b(?:wall|walls|blockwork|masonry)\b", low):
+            continue
+        if not re.search(r"\b(?:thickness|thick)\b", low):
+            continue
+        thickness_positions = [m.start() for m in re.finditer(r"\b(?:thickness|thick)\b", low)]
         for match in _LENGTH.finditer(sentence):
-            before = sentence[max(0, match.start()-55):match.start()].casefold()
-            after = sentence[match.end():match.end()+40].casefold()
-            context = before + " " + after
-            if min(abs(p-match.start()) for p in positions) > 75:
+            if min(abs(p - match.start()) for p in thickness_positions) > 75:
                 continue
-            # These often express building height, not physical wall thickness.
-            if re.search(r"\b(?:height|high|tall|storey|stories|above ground)\b", context):
+            before = sentence[max(0, match.start()-18):match.start()]
+            if re.search(r"(?:[±]|\+/-)\s*$", before):
                 continue
-            # A tolerance or a table reference is not the actual requirement.
-            if re.search(r"\b(?:tolerance|deviation|difference|table\s*\d+)\b", context):
-                continue
-            if re.search(r"(?:[±]|\+/-|\-\s*)\s*$", before):
-                continue
-            numeric = numeric_references_mm(match.group(0))
-            if numeric and numeric[0] <= 2000 and numeric[0] not in supported:
-                supported.append(numeric[0])
-    return supported
+            for value in numeric_references_mm(match.group(0)):
+                if value <= 2000 and value not in found:
+                    found.append(value)
+    return found
 
+
+def wall_scope_issue(wall, text):
+    """Detect obvious IFC-vs-clause scope conflicts before any PASS/FAIL."""
+    low = str(text or "").casefold()
+    is_external = wall.get("IsExternal")
+    if re.search(r"\bexternal\s+walls?\b", low) and is_external is not True:
+        return ("IFC explicitly marks wall internal" if is_external is False
+                else "IFC external/internal classification unavailable")
+    if re.search(r"\binternal\s+walls?\b", low) and is_external is not False:
+        return ("IFC explicitly marks wall external" if is_external is True
+                else "IFC external/internal classification unavailable")
+    if re.search(r"\bcavity\s+walls?\b", low):
+        if not isinstance(wall.get("CavityWidth"), (int, float)):
+            return "Cavity-wall configuration is not established in the IFC evidence"
+    if re.search(r"\bload[\s-]*bearing\b", low):
+        return "Load-bearing classification is not independently established by this workflow"
+    return None
 
 def wall_numeric_candidates(candidates, limit=25):
     """Only wall passages containing an explicitly thickness-associated dimension."""
@@ -121,6 +151,9 @@ def review_wall_clause(wall, candidate, required_mm, comparison, tolerance_mm, *
         tolerance_mm = float(tolerance_mm)
     except (TypeError, ValueError) as exc:
         raise ValueError("Enter a valid requirement and tolerance.") from exc
+    issue = wall_scope_issue(wall, text)
+    if issue:
+        raise ValueError("Clause scope is not supported for this wall: " + issue)
     values = wall_thickness_references_mm(text)
     if not any(abs(x-required_mm) < 0.001 for x in values):
         raise ValueError("Selected dimension is not explicitly supported as a wall thickness in this PDF passage.")
