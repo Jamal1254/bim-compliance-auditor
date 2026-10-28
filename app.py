@@ -15,7 +15,7 @@ import streamlit as st
 
 from audit_engine import AuditRule, MEASUREMENT_TYPES, audit_elements, categories_summary, issue_colour
 from check_ifc_compliance import extract_all_ifc_wall_dimensions
-from spec_context import clause_candidates, candidates_text
+from spec_context import clause_candidates, candidates_text, adjacent_pdf_context
 from llm_assistance import PROMPT_VARIANTS, prompt_for, prompt_sha256, candidate_clauses_with_status
 from validation_export import sample_from_current_model, evidence_review_worksheet, validation_csv
 from validation import evaluate_records
@@ -280,6 +280,7 @@ if result:
             "GlobalId": chosen_wall_id, "Thickness_mm": chosen_wall.get("Width"),
             "ThicknessSource": chosen_wall.get("WidthSource"),
             "MeasurementQuality": chosen_wall.get("MeasurementQuality"),
+            "MillimetresPerIFCNativeLengthUnit": chosen_wall.get("IFC_mm_per_length_unit"),
             "Materials": chosen_wall.get("Materials"),
             "ThicknessCandidates": chosen_wall.get("ThicknessCandidates"),
         })
@@ -287,6 +288,19 @@ if result:
                            format_func=lambda i: f"PDF page {wall_candidates[i]['Page']} | {wall_candidates[i]['Text'][:110]}")
         passage = wall_candidates[idx]
         st.text(passage["Text"])
+        if "see para" in passage["Text"].casefold() or "diagram" in passage["Text"].casefold():
+            st.warning("This short excerpt refers to other paragraphs or diagrams. Review those full source conditions before confirming the clause applies to the model.")
+        context_key = f"{result['PDF_SHA256']}:{passage['Page']}"
+        if st.button("📖 Show original PDF page and surrounding pages (no API cost)", key="pdf_neighbouring_context"):
+            try:
+                page_context = adjacent_pdf_context(pdf_upload.getvalue(), passage["Page"], radius=2)
+                st.session_state["pdf_context_review"] = {"key":context_key,"text":page_context}
+            except Exception as exc:
+                st.error(f"Could not extract adjacent PDF pages: {type(exc).__name__}: {exc}")
+        pdf_context = st.session_state.get("pdf_context_review")
+        if pdf_context and pdf_context.get("key") == context_key:
+            with st.expander("Full surrounding PDF context (requires independent scope review)", expanded=True):
+                st.text(pdf_context["text"])
         options = wall_thickness_references_mm(passage["Text"])
         st.caption("Candidates for TOTAL wall thickness only. Requirements for individual leaves, cavity widths, insulation layers, or building-height limits are not offered for this measurement.")
         chosen_value = st.selectbox("Contractual thickness value (mm) — independently identify", options)
